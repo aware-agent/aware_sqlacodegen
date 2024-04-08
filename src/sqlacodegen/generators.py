@@ -179,9 +179,15 @@ class TablesGenerator(CodeGenerator):
             sections.append(variables + "\n")
 
         # Render models
+        self.enums_to_generate = set()
         rendered_models = self.render_models(models)
         if rendered_models:
             sections.append(rendered_models)
+
+        # Render enums
+        for enum_name, enum_values in self.enums_to_generate:
+            rendered_enum = self.render_python_enum(enum_name, enum_values)
+            sections.insert(0, rendered_enum)  # Insert enums at the beginning
 
         # Render collected imports
         groups = self.group_imports()
@@ -189,7 +195,7 @@ class TablesGenerator(CodeGenerator):
         if imports:
             sections.insert(0, imports)
 
-        return "\n\n".join(sections) + "\n"
+        return "\n\n".join(sections) + "\n\n"  # Extra newline to comply PEP 8.
 
     def collect_imports(self, models: Iterable[Model]) -> None:
         for literal_import in self.base.literal_imports:
@@ -525,6 +531,15 @@ class TablesGenerator(CodeGenerator):
 
         if isinstance(coltype, Enum) and coltype.name is not None:
             kwargs["name"] = repr(coltype.name)
+            enum_class_name = str(
+                coltype.name[0].upper()
+                + re.sub(
+                    r"_([a-z])", lambda m: m.group(1).upper(), coltype.name[1:]
+                )
+            )
+            self.enums_to_generate.add(
+                (enum_class_name, tuple(coltype.enums))  # Convert list to tuple
+            )  # Store enum info for later generation
 
         if isinstance(coltype, JSONB):
             # Remove astext_type if it's the default
@@ -574,6 +589,10 @@ class TablesGenerator(CodeGenerator):
             kwargs["name"] = repr(constraint.name)
 
         return render_callable(constraint.__class__.__name__, *args, kwargs=kwargs)
+
+    def render_python_enum(self, name: str, values: list[str]) -> str:
+        enum_members = "\n    ".join([f"{value.upper()} = '{value}'" for value in values])
+        return f"class {name}(Enum):\n    {enum_members}\n"
 
     def should_ignore_table(self, table: Table) -> bool:
         # Support for Alembic and sqlalchemy-migrate -- never expose the schema version
