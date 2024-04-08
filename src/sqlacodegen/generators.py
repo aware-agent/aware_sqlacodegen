@@ -195,7 +195,7 @@ class TablesGenerator(CodeGenerator):
         if imports:
             sections.insert(0, imports)
 
-        return "\n\n".join(sections) + "\n\n"  # Extra newline to comply PEP 8.
+        return "\n\n".join(sections) + "\n"  # Extra newline to comply PEP 8.
 
     def collect_imports(self, models: Iterable[Model]) -> None:
         for literal_import in self.base.literal_imports:
@@ -222,6 +222,8 @@ class TablesGenerator(CodeGenerator):
 
         if isinstance(column.type, ARRAY):
             self.add_import(column.type.item_type.__class__)
+        elif isinstance(column.type, Enum):
+            self.add_module_import("enum")
         elif isinstance(column.type, JSONB):
             if (
                 not isinstance(column.type.astext_type, Text)
@@ -592,7 +594,7 @@ class TablesGenerator(CodeGenerator):
 
     def render_python_enum(self, name: str, values: list[str]) -> str:
         enum_members = "\n    ".join([f"{value.upper()} = '{value}'" for value in values])
-        return f"class {name}(Enum):\n    {enum_members}\n"
+        return f"class {name}(enum.Enum):\n    {enum_members}\n"
 
     def should_ignore_table(self, table: Table) -> bool:
         # Support for Alembic and sqlalchemy-migrate -- never expose the schema version
