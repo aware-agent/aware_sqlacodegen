@@ -4,7 +4,7 @@ import inspect
 import re
 import sys
 from abc import ABCMeta, abstractmethod
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -197,7 +197,7 @@ class TablesGenerator(CodeGenerator):
         if imports:
             sections.insert(0, imports)
 
-        return "\n\n".join(sections) + "\n"  # Extra newline to comply PEP 8.
+        return "\n\n".join(sections) + "\n"
 
     def collect_imports(self, models: Iterable[Model]) -> None:
         for literal_import in self.base.literal_imports:
@@ -760,7 +760,6 @@ class DeclarativeGenerator(TablesGenerator):
             ],
             metadata_ref=f"{self.base_class_name}.metadata",
         )
-        self.function_generator = FunctionGenerator(self.bind.engine.url)
 
     def collect_imports(self, models: Iterable[Model]) -> None:
         super().collect_imports(models)
@@ -1102,12 +1101,10 @@ class DeclarativeGenerator(TablesGenerator):
 
     def render_models(self, models: list[Model]) -> str:
         rendered: list[str] = []
-        class_functions = self.function_generator.fetch_functions()
         for model in models:
             if isinstance(model, ModelClass):
-                functions = class_functions.get(model.table.name, [])
                 rendered.append(
-                    self.render_class(model, functions)
+                    self.render_class(model)
                 )
             else:
                 rendered.append(f"{model.name} = {self.render_table(model.table)}")
@@ -1676,10 +1673,12 @@ class AwareGenerator(SQLModelGenerator):
             item_python_type = self.get_python_type(item_type)
             return f"List[{item_python_type}]"
         try:
-            python_type = sql_type.python_type.__name__
-        except NotImplementedError:
-            python_type = "Any"
-        return python_type
+            return sql_type.python_type.__name__
+        except Exception:
+            return "Any"
+
+    def get_sql_type(self, type_name):
+        return base.ischema_names.get(type_name.lower())
 
     def render_rpc_method(self, func_meta: FunctionMetadata):
         args = []
@@ -1688,36 +1687,73 @@ class AwareGenerator(SQLModelGenerator):
         # Process each argument
         for arg in func_meta.argument_types:
             name, type_name, is_array, default = self.parse_argument(arg)
-            sql_type_class = base.ischema_names.get(type_name.lower())
-            if sql_type_class:
-                column_render = self.get_python_type(sql_type_class(), is_array)
+            sql_type_class = self.get_sql_type(type_name)
+            if sql_type_class is not None:
+                python_type = self.get_python_type(sql_type_class(), is_array)
             else:
-                column_render = type_name
+                python_type = type_name
 
             # Append default value syntax if present
             if default:
-                args.append(f"{name}: {column_render} = {default}")
+                args.append(f"{name}: {python_type} = {default}")
             else:
-                args.append(f"{name}: {column_render}")
+                args.append(f"{name}: {python_type}")
 
             kwargs.append(f'"{name}": {name}')
         args_str = ", ".join(args)
         kwargs_str = ", ".join(kwargs)
 
         # Convert the return type from SQL to Python
-        return_python_type = self.get_python_type(
-            base.ischema_names.get(func_meta.return_type.lower(), type(None))()
-        )
+        return_type = self.get_sql_type(func_meta.return_type.lower())
+        if return_type is not None:
+            return_python_type = self.get_python_type(return_type())
+            docstring_full = (
+                f'"""Returns the result as a {return_python_type}."""'
+            )
+        elif "TABLE" in func_meta.return_type:
+            columns = self.parse_table_structure(func_meta.return_type)
+            columns_python_types = {}
+            docstring_parts = []
+
+            for name, type_name in columns.items():
+                column_sql_type = self.get_sql_type(type_name)
+                if column_sql_type is not None:
+                    python_type = self.get_python_type(column_sql_type())
+                else:
+                    python_type = "Any"
+                columns_python_types[name] = python_type
+                docstring_parts.append(f"    {name} - ({python_type})")
+
+            self.add_literal_import("typing", "Dict")
+            self.add_literal_import("typing", "Union")
+
+            docstring = "\n        ".join(docstring_parts)
+            docstring_full = f'"""Returns a dictionary with the following keys and types:\n        {docstring}\n        """'
+            return_python_type = f"Dict[str, Union[{', '.join(set(columns_python_types.values()))}]]"
+        else:
+            docstring_full = (
+                f'"""Returns the result as a {return_python_type}."""'
+            )
+            return_python_type = "Any"
 
         # Create the function definition with exact two line jumps before
         function_definition = (
             "\n\n"
             f"    @classmethod\n"
             f"    def {func_meta.name}(cls, {args_str}) -> {return_python_type}:\n"
-            f"        return cls._supabase_client.rpc(\"{func_meta.name}\", "
+            f"        {docstring_full}\n"
+            f"        return cls.get_supabase_client().rpc(\"{func_meta.name}\", "
             f"{{{kwargs_str}}}).execute().data"
         )
         return function_definition
+
+    def parse_table_structure(self, return_type_str: str):
+        columns = {}
+        parts = return_type_str.strip('TABLE()').split(',')
+        for part in parts:
+            name, type_str = part.split()
+            columns[name.strip()] = type_str.strip()
+        return columns
 
 
 @dataclass
