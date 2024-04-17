@@ -40,7 +40,7 @@ from sqlalchemy import (
     create_engine,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, base
+from sqlalchemy.dialects.postgresql import JSONB, UUID, base
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import CompileError
 from sqlalchemy.sql.elements import TextClause
@@ -767,18 +767,12 @@ class DeclarativeGenerator(TablesGenerator):
         if any(isinstance(model, ModelClass) for model in models):
             self.add_literal_import("sqlalchemy.orm", "Mapped")
             self.add_literal_import("sqlalchemy.orm", "mapped_column")
-        # Collect AWARE imports
-        self.collect_imports_aware()
 
     def collect_imports_for_model(self, model: Model) -> None:
         super().collect_imports_for_model(model)
         if isinstance(model, ModelClass):
             if model.relationships:
                 self.add_literal_import("sqlalchemy.orm", "relationship")
-
-    def collect_imports_aware(self):
-        self.add_literal_import("aware_database_handlers.supabase.supabase_client_handler",
-                                "SupabaseClientHandler")
 
     def generate_models(self) -> list[Model]:
         models_by_table_name: dict[str, Model] = {}
@@ -1113,106 +1107,12 @@ class DeclarativeGenerator(TablesGenerator):
             if isinstance(model, ModelClass):
                 functions = class_functions.get(model.table.name, [])
                 rendered.append(
-                    self.render_class_with_supabase_methods(model, functions)
+                    self.render_class(model, functions)
                 )
             else:
                 rendered.append(f"{model.name} = {self.render_table(model.table)}")
 
         return "\n\n\n".join(rendered)
-
-    def render_class_with_supabase_methods(
-        self, model: ModelClass, functions: list[FunctionMetadata]
-    ):
-        # Render the base class with current SQLACODEGEN functionality
-        rendered_class = self.render_class(model)
-
-        # Add Supabase client initialization
-        init_section = self.render_supabase_client_initialization()
-        rendered_class += init_section
-
-        # Generate and add RPC methods
-        for func in functions:
-            rpc_method = self.render_rpc_method(func)
-            rendered_class += rpc_method
-
-        return rendered_class
-
-    def render_supabase_client_initialization(self):
-        return """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.supabase_client = SupabaseClientHandler().get_supabase_client()
-        """
-
-    def parse_argument(self, arg):
-        # Regex to extract name, type, and optionally a default value
-        pattern = r'^(\w+)\s+([\w\[\]]+)(?:\s+DEFAULT\s+(.*))?$'
-        match = re.match(pattern, arg, re.IGNORECASE)
-        if not match:
-            raise ValueError(f"Could not parse argument: {arg}")
-        name, type_name, default = match.groups()
-        is_array = '[]' in type_name
-        type_name = type_name.replace('[]', '')
-
-        # Handling array defaults and removing PostgreSQL type casting from default values
-        if default:
-            # Remove PostgreSQL type casting which is denoted by '::'
-            default = re.sub(r"::[\w\[\]]+", "", default)  # Remove any ::type parts
-            if is_array:
-                # Format as a Python list if it's an array type
-                default = default.replace('ARRAY', '').strip('[]')
-                default = f"[{default}]"
-        return name, type_name, is_array, default
-
-    def get_python_type(self, sql_type, is_array=False):
-        if is_array:
-            # Get the Python type for the array's item type if it's explicitly an ARRAY type
-            item_type = sql_type.item_type if isinstance(sql_type, ARRAY) else sql_type
-            item_python_type = self.get_python_type(item_type)
-            return f"List[{item_python_type}]"
-        try:
-            python_type = sql_type.python_type
-            python_type_name = python_type.__name__
-            if python_type.__module__ == "builtins":
-                column_python_type = python_type_name
-            else:
-                python_type_module = python_type.__module__
-                column_python_type = f"{python_type_module}.{python_type_name}"
-        except NotImplementedError:
-            column_python_type = "Any"
-        return column_python_type
-
-    def render_rpc_method(self, func_meta: FunctionMetadata):
-        args = []
-        kwargs = []
-
-        # Process each argument
-        for arg in func_meta.argument_types:
-            name, type_name, is_array, default = self.parse_argument(arg)
-            sql_type_class = base.ischema_names.get(type_name.lower())
-            if sql_type_class:
-                column_render = self.get_python_type(sql_type_class(), is_array)
-            else:
-                column_render = type_name
-
-            # Append default value syntax if present
-            if default:
-                args.append(f"{name}: {column_render} = {default}")
-            else:
-                args.append(f"{name}: {column_render}")
-
-            kwargs.append(f'"{name}": {name}')
-        args_str = ", ".join(args)
-        kwargs_str = ", ".join(kwargs)
-
-        # Convert the return type from SQL to Python
-        return_python_type = self.get_python_type(base.ischema_names.get(func_meta.return_type.lower(), type(None))())
-
-        return f"""
-    def {func_meta.name}(self, {args_str}) -> {return_python_type}:
-        return self.supabase_client.rpc("{func_meta.name}", {{{kwargs_str}}}).execute().data
-    """
 
     def render_class(self, model: ModelClass) -> str:
         sections: list[str] = []
@@ -1572,7 +1472,7 @@ class SQLModelGenerator(DeclarativeGenerator):
         )
 
     def collect_imports(self, models: Iterable[Model]) -> None:
-        super().collect_imports(models)
+        super(DeclarativeGenerator, self).collect_imports(models)
         if any(isinstance(model, ModelClass) for model in models):
             self.add_literal_import("sqlmodel", "SQLModel")
             self.add_literal_import("sqlmodel", "Field")
@@ -1643,6 +1543,10 @@ class SQLModelGenerator(DeclarativeGenerator):
         else:
             python_type_name = python_type.__name__
 
+        # Translate UUID to str to comply with Pydantic
+        if python_type_name == "UUID":
+            python_type_name = "str"
+
         kwargs: dict[str, Any] = {}
         if (
             column.autoincrement and column.name in column.table.primary_key
@@ -1699,7 +1603,7 @@ class AwareGenerator(SQLModelGenerator):
         options: Sequence[str],
         *,
         indentation: str = "    ",
-        base_class_name: str = "SQLModel",
+        base_class_name: str = "AwareSQLModel",
     ):
         super().__init__(
             metadata,
@@ -1711,8 +1615,8 @@ class AwareGenerator(SQLModelGenerator):
 
     def collect_imports(self, models: Iterable[Model]) -> None:
         super().collect_imports(models)
-        self.add_literal_import("aware_database_handlers.supabase.supabase_client_handler",
-                                "SupabaseClientHandler")
+        self.remove_literal_import("sqlmodel", "SQLModel")
+        self.add_literal_import("aware_sql_python_types.base_model", "AwareSQLModel")
 
     def generate_base(self) -> None:
         self.function_generator = FunctionGenerator(self.bind.engine.url)
@@ -1738,24 +1642,12 @@ class AwareGenerator(SQLModelGenerator):
         # Render the base class with current SQLACODEGEN functionality
         rendered_class = self.render_class(model)
 
-        # Add Supabase client initialization
-        init_section = self.render_supabase_client_initialization()
-        rendered_class += init_section
-
         # Generate and add RPC methods
         for func in functions:
             rpc_method = self.render_rpc_method(func)
             rendered_class += rpc_method
 
         return rendered_class
-
-    def render_supabase_client_initialization(self):
-        return """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.supabase_client = SupabaseClientHandler().get_supabase_client()
-        """
 
     def parse_argument(self, arg):
         # Regex to extract name, type, and optionally a default value
@@ -1785,11 +1677,6 @@ class AwareGenerator(SQLModelGenerator):
             return f"List[{item_python_type}]"
         try:
             python_type = sql_type.python_type.__name__
-            # if python_type.__module__ == "builtins":
-            #     column_python_type = python_type_name
-            # else:
-            #     python_type_module = python_type.__module__
-            #     column_python_type = f"{python_type_module}.{python_type_name}"
         except NotImplementedError:
             python_type = "Any"
         return python_type
@@ -1818,12 +1705,19 @@ class AwareGenerator(SQLModelGenerator):
         kwargs_str = ", ".join(kwargs)
 
         # Convert the return type from SQL to Python
-        return_python_type = self.get_python_type(base.ischema_names.get(func_meta.return_type.lower(), type(None))())
+        return_python_type = self.get_python_type(
+            base.ischema_names.get(func_meta.return_type.lower(), type(None))()
+        )
 
-        return f"""
-    def {func_meta.name}(self, {args_str}) -> {return_python_type}:
-        return self.supabase_client.rpc("{func_meta.name}", {{{kwargs_str}}}).execute().data
-    """
+        # Create the function definition with exact two line jumps before
+        function_definition = (
+            "\n\n"
+            f"    @classmethod\n"
+            f"    def {func_meta.name}(cls, {args_str}) -> {return_python_type}:\n"
+            f"        return cls._supabase_client.rpc(\"{func_meta.name}\", "
+            f"{{{kwargs_str}}}).execute().data"
+        )
+        return function_definition
 
 
 @dataclass
