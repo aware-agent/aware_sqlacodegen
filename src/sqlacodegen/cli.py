@@ -47,7 +47,7 @@ def main() -> None:
     parser.add_argument(
         "--generator",
         choices=generators,
-        default="declarative",
+        default="aware",  # Default to aware generator
         help="generator class to use",
     )
     parser.add_argument(

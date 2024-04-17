@@ -56,6 +56,7 @@ tables = "sqlacodegen.generators:TablesGenerator"
 declarative = "sqlacodegen.generators:DeclarativeGenerator"
 dataclasses = "sqlacodegen.generators:DataclassGenerator"
 sqlmodels = "sqlacodegen.generators:SQLModelGenerator"
+aware = "sqlacodegen.generators:AwareGenerator"
 
 [project.scripts]
 sqlacodegen = "sqlacodegen.cli:main"
