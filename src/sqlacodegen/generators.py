@@ -1613,11 +1613,47 @@ class AwareGenerator(SQLModelGenerator):
     def collect_imports(self, models: Iterable[Model]) -> None:
         super().collect_imports(models)
         self.remove_literal_import("sqlmodel", "SQLModel")
-        self.add_literal_import("aware_sql_python_types.base_model", "AwareSQLModel")
+        self.add_literal_import(
+            "aware_sql_python_types.base_model", "AwareSQLModel"
+        )
 
     def generate_base(self) -> None:
         self.function_generator = FunctionGenerator(self.bind.engine.url)
         super().generate_base()
+
+    def generate_model_name(self, model: Model, global_names: set[str]) -> None:
+        if isinstance(model, ModelClass):
+            preferred_name = _re_invalid_identifier.sub("_", model.table.name)
+            preferred_name = "".join(
+                part[:1].upper() + part[1:]
+                for part in preferred_name.split("_")
+            )
+            if "use_inflect" in self.options:
+                singular_name = self.inflect_engine.singular_noun(
+                    preferred_name
+                )
+                if singular_name:
+                    preferred_name = singular_name
+
+            preferred_name = f"Pg{preferred_name}"  # Only modification to the original method adding "Pg" prefix
+            model.name = self.find_free_name(preferred_name, global_names)
+
+            # Fill in the names for column attributes
+            local_names: set[str] = set()
+            for column_attr in model.columns:
+                self.generate_column_attr_name(
+                    column_attr, global_names, local_names
+                )
+                local_names.add(column_attr.name)
+
+            # Fill in the names for relationship attributes
+            for relationship in model.relationships:
+                self.generate_relationship_name(
+                    relationship, global_names, local_names
+                )
+                local_names.add(relationship.name)
+        else:
+            super().generate_model_name(model, global_names)
 
     def render_models(self, models: list[Model]) -> str:
         rendered: list[str] = []
@@ -1629,7 +1665,9 @@ class AwareGenerator(SQLModelGenerator):
                     self.render_class_with_supabase_methods(model, functions)
                 )
             else:
-                rendered.append(f"{model.name} = {self.render_table(model.table)}")
+                rendered.append(
+                    f"{model.name} = {self.render_table(model.table)}"
+                )
 
         return "\n\n\n".join(rendered)
 
@@ -1639,7 +1677,7 @@ class AwareGenerator(SQLModelGenerator):
         # Render the base class with current SQLACODEGEN functionality
         rendered_class = self.render_class(model)
 
-        # Generate and add RPC methods
+        # Generate and add RPC methods to the class
         for func in functions:
             rpc_method = self.render_rpc_method(func)
             rendered_class += rpc_method
@@ -1648,34 +1686,25 @@ class AwareGenerator(SQLModelGenerator):
 
     def parse_argument(self, arg):
         # Regex to extract name, type, and optionally a default value
-        pattern = r'^(\w+)\s+([\w\[\]]+)(?:\s+DEFAULT\s+(.*))?$'
+        pattern = r"^(\w+)\s+([\w\[\]]+)(?:\s+DEFAULT\s+(.*))?$"
         match = re.match(pattern, arg, re.IGNORECASE)
         if not match:
             raise ValueError(f"Could not parse argument: {arg}")
         name, type_name, default = match.groups()
-        is_array = '[]' in type_name
-        type_name = type_name.replace('[]', '')
+        is_array = "[]" in type_name
+        type_name = type_name.replace("[]", "")
 
         # Handling array defaults and removing PostgreSQL type casting from default values
         if default:
             # Remove PostgreSQL type casting which is denoted by '::'
-            default = re.sub(r"::[\w\[\]]+", "", default)  # Remove any ::type parts
+            default = re.sub(
+                r"::[\w\[\]]+", "", default
+            )  # Remove any ::type parts
             if is_array:
                 # Format as a Python list if it's an array type
-                default = default.replace('ARRAY', '').strip('[]')
+                default = default.replace("ARRAY", "").strip("[]")
                 default = f"[{default}]"
         return name, type_name, is_array, default
-
-    def get_python_type(self, sql_type, is_array=False):
-        if is_array:
-            # Get the Python type for the array's item type if it's explicitly an ARRAY type
-            item_type = sql_type.item_type if isinstance(sql_type, ARRAY) else sql_type
-            item_python_type = self.get_python_type(item_type)
-            return f"List[{item_python_type}]"
-        try:
-            return sql_type.python_type.__name__
-        except Exception:
-            return "Any"
 
     def get_sql_type(self, type_name):
         return base.ischema_names.get(type_name.lower())
@@ -1687,11 +1716,7 @@ class AwareGenerator(SQLModelGenerator):
         # Process each argument
         for arg in func_meta.argument_types:
             name, type_name, is_array, default = self.parse_argument(arg)
-            sql_type_class = self.get_sql_type(type_name)
-            if sql_type_class is not None:
-                python_type = self.get_python_type(sql_type_class(), is_array)
-            else:
-                python_type = type_name
+            python_type = get_python_type(type_name, is_array)
 
             # Append default value syntax if present
             if default:
@@ -1704,52 +1729,40 @@ class AwareGenerator(SQLModelGenerator):
         kwargs_str = ", ".join(kwargs)
 
         # Convert the return type from SQL to Python
-        return_type = self.get_sql_type(func_meta.return_type.lower())
-        if return_type is not None:
-            return_python_type = self.get_python_type(return_type())
-            docstring_full = (
-                f'"""Returns the result as a {return_python_type}."""'
-            )
-        elif "TABLE" in func_meta.return_type:
-            columns = self.parse_table_structure(func_meta.return_type)
-            columns_python_types = {}
-            docstring_parts = []
+        # !! TODO: Check if is_array!!
+        return_python_type = get_python_type(func_meta.return_type)
+        docstring_full = (
+            f'"""Returns the result as a {return_python_type}."""'
+        )
 
-            for name, type_name in columns.items():
-                column_sql_type = self.get_sql_type(type_name)
-                if column_sql_type is not None:
-                    python_type = self.get_python_type(column_sql_type())
-                else:
-                    python_type = "Any"
-                columns_python_types[name] = python_type
-                docstring_parts.append(f"    {name} - ({python_type})")
+        # Indentation settings
+        indentation = "    "  # Standard 4 spaces for Python
+        double_indentation = indentation * 2
+        triple_indentation = indentation * 3
 
-            self.add_literal_import("typing", "Dict")
-            self.add_literal_import("typing", "Union")
+        # Correctly format the docstring
+        docstring_indented = func_meta.docstring.replace("\n", "\n" + double_indentation)
+        docstring_full = (
+            f'{double_indentation}"""\n'
+            f'{double_indentation}{docstring_indented}\n'
+            f'{double_indentation}\n'
+            f'{double_indentation}Returns:\n'
+            f'{triple_indentation}{return_python_type}\n'
+            f'{double_indentation}"""'
+        )
 
-            docstring = "\n        ".join(docstring_parts)
-            docstring_full = f'"""Returns a dictionary with the following keys and types:\n        {docstring}\n        """'
-            return_python_type = f"Dict[str, Union[{', '.join(set(columns_python_types.values()))}]]"
-        else:
-            docstring_full = (
-                f'"""Returns the result as a {return_python_type}."""'
-            )
-            return_python_type = "Any"
-
-        # Create the function definition with exact two line jumps before
+        # Create the function definition with the correct indentation
         function_definition = (
-            "\n\n"
-            f"    @classmethod\n"
-            f"    def {func_meta.name}(cls, {args_str}) -> {return_python_type}:\n"
-            f"        {docstring_full}\n"
-            f"        return cls.get_supabase_client().rpc(\"{func_meta.name}\", "
-            f"{{{kwargs_str}}}).execute().data"
+            f"\n\n{indentation}@classmethod\n"
+            f"{indentation}def {func_meta.name}(cls, {args_str}) -> {return_python_type}:\n"
+            f"{docstring_full}\n"
+            f"{double_indentation}return cls.get_supabase_client().rpc(\"{func_meta.name}\", {{{kwargs_str}}}).execute().data"
         )
         return function_definition
 
     def parse_table_structure(self, return_type_str: str):
         columns = {}
-        parts = return_type_str.strip('TABLE()').split(',')
+        parts = return_type_str.strip("TABLE()").split(",")
         for part in parts:
             name, type_str = part.split()
             columns[name.strip()] = type_str.strip()
@@ -1762,10 +1775,11 @@ class FunctionMetadata:
     name: str
     return_type: str
     argument_types: list[str]
+    docstring: str = ""
 
 
 class FunctionGenerator:
-    """TODO: Improve me. Use same pattern as in TablesGenerator."""
+    """Fetches and parses function metadata from a PostgreSQL database."""
 
     def __init__(self, engine_url: str):
         self.engine = create_engine(engine_url)
@@ -1774,14 +1788,14 @@ class FunctionGenerator:
         query = text(
             """
             SELECT n.nspname as schema,
-                   p.proname as name,
-                   pg_catalog.pg_get_function_result(p.oid) as return_type,
-                   pg_catalog.pg_get_function_arguments(p.oid) as argument_types,
-                   obj_description(p.oid, 'pg_proc') as function_comment
+                p.proname as name,
+                pg_catalog.pg_get_function_result(p.oid) as return_type,
+                pg_catalog.pg_get_function_arguments(p.oid) as argument_types,
+                obj_description(p.oid, 'pg_proc') as function_comment
             FROM pg_catalog.pg_proc p
             LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-                  AND p.prokind = 'f'  -- 'f' for normal functions
+                AND p.prokind = 'f'
             ORDER BY 1, 2;
             """
         )
@@ -1789,18 +1803,132 @@ class FunctionGenerator:
             result = conn.execute(query)
             class_functions: dict[str, list[FunctionMetadata]] = {}
             for row in result.fetchall():
-                if row[4] and "Table Method:" in row[4]:
-                    class_name = row[4].split("Table Method:")[1].strip()
+                docstring, metadata = self.parse_comments(row[4])
+                class_name = metadata.get("Table Method", None)
+                if class_name:
                     func_metadata = FunctionMetadata(
                         schema=row[0],
                         name=row[1],
                         return_type=row[2],
                         argument_types=[
-                            arg.strip() for arg in row[3].split(",") if row[3]
+                            arg.strip() for arg in row[3].split(",") if arg
                         ],
+                        docstring=docstring,
                     )
                     if class_name not in class_functions:
                         class_functions[class_name] = []
                     class_functions[class_name].append(func_metadata)
-
             return class_functions
+
+    def parse_comments(self, comment) -> tuple[str, dict[str, str]]:
+        """
+        Uses regular expressions to extract docstrings and metadata from function comments.
+        """
+        if not comment:
+            return "", {}
+
+        docstring_match = re.search(
+            r"DOCSTRING:\s*(.*?)\nMETADATA:", comment, re.DOTALL
+        )
+        metadata_match = re.search(r"METADATA:(.*)", comment, re.DOTALL)
+
+        docstring = docstring_match.group(1).strip() if docstring_match else ""
+        metadata = {}
+
+        if metadata_match:
+            metadata_content = metadata_match.group(1).strip()
+            for line in metadata_content.split("\n"):
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    metadata[key.strip()] = value.strip()
+
+        return docstring, metadata
+
+
+def get_python_type(sql_type: str, is_array: bool = False) -> str:
+    """
+    Map PostgreSQL types to Python types.
+    """
+    type_mapping = {
+        # Numeric types
+        "smallint": "int",
+        "integer": "int",
+        "bigint": "int",
+        "decimal": "Decimal",
+        "numeric": "Decimal",
+        "real": "float",
+        "double precision": "float",
+        "serial": "int",
+        "bigserial": "int",
+
+        # Monetary types
+        "money": "str",
+
+        # Character types
+        "character varying": "str",
+        "varchar": "str",
+        "character": "str",
+        "char": "str",
+        "text": "str",
+
+        # Binary Data Types
+        "bytea": "bytes",
+
+        # Date/Time Types
+        "timestamp without time zone": "datetime",
+        "timestamp with time zone": "datetime",
+        "date": "date",
+        "time without time zone": "time",
+        "time with time zone": "time",
+        "interval": "timedelta",
+
+        # Boolean Type
+        "boolean": "bool",
+
+        # Enum Type
+        "enum": "Enum",  # Custom handling may be needed for specific enums
+
+        # Geometric Types
+        "point": "tuple",
+        "line": "str",
+        "lseg": "tuple",
+        "box": "tuple",
+        "path": "list",
+        "polygon": "list",
+        "circle": "tuple",
+
+        # Network Address Types
+        "cidr": "str",
+        "inet": "str",
+        "macaddr": "str",
+
+        # Bit String Types
+        "bit": "str",
+        "bit varying": "str",
+
+        # UUID Type
+        "uuid": "str",
+
+        # JSON Types
+        "json": "dict",
+        "jsonb": "dict",
+
+        # Array Types
+        # Handling array needs to be more dynamic based on the element type
+        # Example: integer[] -> List[int]
+
+        # XML Type
+        "xml": "str",
+
+        # Full Text Search Types
+        "tsvector": "str",
+        "tsquery": "str",
+
+        # Other/miscellaneous types
+        "oid": "int",
+        "range": "range",  # Custom handling might be needed
+    }
+
+    # Array handling
+    python_type = type_mapping.get(sql_type, "Any")
+    return f"List[{python_type}]" if is_array else python_type
