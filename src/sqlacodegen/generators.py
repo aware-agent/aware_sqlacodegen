@@ -1635,7 +1635,7 @@ class AwareGenerator(SQLModelGenerator):
                 if singular_name:
                     preferred_name = singular_name
 
-            preferred_name = f"Pg{preferred_name}"  # Only modification to the original method adding "Pg" prefix
+            preferred_name = f"ORM{preferred_name}"  # Only modification to the original method adding "ORM" prefix
             model.name = self.find_free_name(preferred_name, global_names)
 
             # Fill in the names for column attributes
