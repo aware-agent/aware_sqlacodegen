@@ -1805,7 +1805,7 @@ class AwareGenerator(SQLModelGenerator):
 
     def parse_argument(self, arg):
         # Regex to extract name, type, and optionally a default value
-        pattern = r"^(\w+)\s+([\w\[\]]+)(?:\s+DEFAULT\s+(.*))?$"
+        pattern = r"^(\w+)\s+([\w\s\[\]]+?)(?:\s+DEFAULT\s+(.*))?$"
         match = re.match(pattern, arg, re.IGNORECASE)
         if not match:
             raise ValueError(f"Could not parse argument: {arg}")
