@@ -1812,6 +1812,7 @@ class AwareGenerator(SQLModelGenerator):
         name, type_name, default = match.groups()
         is_array = "[]" in type_name
         type_name = type_name.replace("[]", "")
+        python_type = get_python_type(type_name, is_array)
 
         # Handling array defaults and removing PostgreSQL type casting from default values
         if default:
@@ -1823,10 +1824,10 @@ class AwareGenerator(SQLModelGenerator):
                 # Format as a Python list if it's an array type
                 default = default.replace("ARRAY", "").strip("[]")
                 default = f"[{default}]"
-        return name, type_name, is_array, default
-
-    def get_sql_type(self, type_name):
-        return base.ischema_names.get(type_name.lower())
+            if default == "NULL":
+                default = "None"
+                python_type = f"Optional[{python_type}]"
+        return name, python_type, default
 
     def render_rpc_method(self, func_meta: FunctionMetadata):
         args = []
@@ -1834,8 +1835,7 @@ class AwareGenerator(SQLModelGenerator):
 
         # Process each argument
         for arg in func_meta.argument_types:
-            name, type_name, is_array, default = self.parse_argument(arg)
-            python_type = get_python_type(type_name, is_array)
+            name, python_type, default = self.parse_argument(arg)
 
             # Append default value syntax if present
             if default:
