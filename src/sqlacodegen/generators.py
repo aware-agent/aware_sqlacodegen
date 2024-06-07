@@ -1735,6 +1735,8 @@ class AwareGenerator(SQLModelGenerator):
         self.add_literal_import(
             "aware_sql_python_types.base_model", "AwareSQLModel"
         )
+        # TODO: improve, determine based on python types.
+        self.add_literal_import("typing", "Set")
 
     def generate_base(self) -> None:
         self.function_generator = FunctionGenerator(self.bind.engine.url)
@@ -1810,16 +1812,15 @@ class AwareGenerator(SQLModelGenerator):
         if not match:
             raise ValueError(f"Could not parse argument: {arg}")
         name, type_name, default = match.groups()
-        is_array = "[]" in type_name
-        type_name = type_name.replace("[]", "")
-        python_type = get_python_type(type_name, is_array)
 
+        python_type = get_python_type(type_name)
         # Handling array defaults and removing PostgreSQL type casting from default values
         if default:
             # Remove PostgreSQL type casting which is denoted by '::'
             default = re.sub(
                 r"::[\w\[\]]+", "", default
             )  # Remove any ::type parts
+            is_array = "[]" in type_name
             if is_array:
                 # Format as a Python list if it's an array type
                 default = default.replace("ARRAY", "").strip("[]")
@@ -1848,7 +1849,6 @@ class AwareGenerator(SQLModelGenerator):
         kwargs_str = ", ".join(kwargs)
 
         # Convert the return type from SQL to Python
-        # !! TODO: Check if is_array!!
         return_python_type = get_python_type(func_meta.return_type)
         docstring_full = f'"""Returns the result as a {return_python_type}."""'
 
@@ -1870,10 +1870,16 @@ class AwareGenerator(SQLModelGenerator):
             f'{double_indentation}"""'
         )
 
+        # Generate method signature
+        if args_str:
+            method_signature = f"def {func_meta.name}(cls, {args_str}) -> {return_python_type}:"
+        else:
+            method_signature = f"def {func_meta.name}(cls) -> {return_python_type}:"
+
         # Create the function definition with the correct indentation
         function_definition = (
             f"\n\n{indentation}@classmethod\n"
-            f"{indentation}def {func_meta.name}(cls, {args_str}) -> {return_python_type}:\n"
+            f"{indentation}{method_signature}\n"
             f"{docstring_full}\n"
             f'{double_indentation}return cls.get_supabase_client().rpc("{func_meta.name}", {{{kwargs_str}}}).execute().data'
         )
@@ -2020,9 +2026,6 @@ def get_python_type(sql_type: str, is_array: bool = False) -> str:
         # JSON Types
         "json": "dict",
         "jsonb": "dict",
-        # Array Types
-        # Handling array needs to be more dynamic based on the element type
-        # Example: integer[] -> List[int]
         # XML Type
         "xml": "str",
         # Full Text Search Types
@@ -2031,8 +2034,36 @@ def get_python_type(sql_type: str, is_array: bool = False) -> str:
         # Other/miscellaneous types
         "oid": "int",
         "range": "range",  # Custom handling might be needed
+        # Void Type
+        "void": "None",
     }
 
-    # Array handling
-    python_type = type_mapping.get(sql_type, "Any")
-    return f"List[{python_type}]" if is_array else python_type
+    is_array, is_set, base_type = is_array_or_set(sql_type)
+
+    python_type = type_mapping.get(base_type, "Any")
+    
+    if is_array:
+        return f"List[{python_type}]"
+    if is_set:
+        return f"Set[{python_type}]"
+
+    return python_type
+    # # Array handling
+    # python_type = type_mapping.get(sql_type, "Any")
+    # return f"List[{python_type}]" if is_array else python_type
+
+def is_array_or_set(sql_type: str) -> tuple[bool, bool, str]:
+    """
+    Determine if the SQL type is an array or set and return the base type.
+    """
+    sql_type = sql_type.lower()  # Convert to lowercase for easier comparison
+    is_array = sql_type.endswith('[]')
+    is_set = sql_type.startswith('setof ')
+
+    base_type = sql_type
+    if is_array:
+        base_type = sql_type[:-2]
+    elif is_set:
+        base_type = sql_type[6:]
+        
+    return is_array, is_set, base_type
