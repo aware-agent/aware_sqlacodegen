@@ -3,30 +3,27 @@ from __future__ import annotations
 import argparse
 import sys
 from contextlib import ExitStack
+from importlib.metadata import PackageNotFoundError, entry_points, version
 from typing import TextIO
 
 from sqlalchemy.engine import create_engine
 from sqlalchemy.schema import MetaData
 
-try:
-    import citext
-except ImportError:
-    citext = None
+# Optional imports
+optional_packages = ["citext", "geoalchemy2", "pgvector"]
+for package in optional_packages:
+    try:
+        __import__(package)
+        globals()[package] = True
+    except ImportError:
+        globals()[package] = False
 
-try:
-    import geoalchemy2
-except ImportError:
-    geoalchemy2 = None
 
-try:
-    import pgvector.sqlalchemy
-except ImportError:
-    pgvector = None
-
-if sys.version_info < (3, 10):
-    from importlib_metadata import entry_points, version
-else:
-    from importlib.metadata import entry_points, version
+def get_version(package: str) -> str:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "not installed"
 
 
 def main() -> None:
@@ -58,7 +55,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.version:
-        print(version("sqlacodegen"))
+        print(f"sqlacodegen version: {get_version('sqlacodegen')}")
         return
 
     if not args.url:
@@ -66,14 +63,9 @@ def main() -> None:
         parser.print_help()
         return
 
-    if citext:
-        print(f"Using sqlalchemy-citext {version('citext')}")
-
-    if geoalchemy2:
-        print(f"Using geoalchemy2 {version('geoalchemy2')}")
-
-    if pgvector:
-        print(f"Using pgvector {version('pgvector')}")
+    for package in optional_packages:
+        if globals()[package]:
+            print(f"Using {package} {get_version(package)}")
 
     # Use reflection to fill in the metadata
     engine = create_engine(args.url)
@@ -99,3 +91,7 @@ def main() -> None:
 
         # Write the generated model code to the specified file or standard output
         outfile.write(generator.generate())
+
+
+if __name__ == "__main__":
+    main()

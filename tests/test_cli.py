@@ -151,10 +151,11 @@ primary_key=True))
 
 
 def test_main() -> None:
-    expected_version = version("sqlacodegen")
+    expected_version = f"sqlacodegen version: {version('sqlacodegen')}"
     completed = subprocess.run(
         [sys.executable, "-m", "sqlacodegen", "--version"],
         stdout=subprocess.PIPE,
         check=True,
     )
     assert completed.stdout.decode().strip() == expected_version
+
