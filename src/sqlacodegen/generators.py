@@ -44,7 +44,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import CompileError
 from sqlalchemy.sql.elements import TextClause
-from sqlalchemy import create_engine, text
 
 from .models import (
     ColumnAttribute,
@@ -334,9 +333,7 @@ class TablesGenerator(CodeGenerator):
         self.collect_imports(models)
 
         # Generate names for models
-        global_names = {
-            name for namespace in self.imports.values() for name in namespace
-        }
+        global_names = {name for namespace in self.imports.values() for name in namespace}
         for model in models:
             self.generate_model_name(model, global_names)
             global_names.add(model.name)
@@ -580,9 +577,7 @@ class TablesGenerator(CodeGenerator):
         args: list[str] = []
         kwargs: dict[str, Any] = {}
         if isinstance(constraint, ForeignKey):
-            remote_column = (
-                f"{constraint.column.table.fullname}.{constraint.column.name}"
-            )
+            remote_column = f"{constraint.column.table.fullname}.{constraint.column.name}"
             add_fk_options(remote_column)
         elif isinstance(constraint, ForeignKeyConstraint):
             local_columns = get_column_names(constraint)
@@ -606,9 +601,7 @@ class TablesGenerator(CodeGenerator):
         return render_callable(constraint.__class__.__name__, *args, kwargs=kwargs)
 
     def render_python_enum(self, name: str, values: list[str]) -> str:
-        enum_members = "\n    ".join(
-            [f"{value.upper()} = '{value}'" for value in values]
-        )
+        enum_members = "\n    ".join([f"{value.upper()} = '{value}'" for value in values])
         return f"class {name}(enum.Enum):\n    {enum_members}\n"
 
     def should_ignore_table(self, table: Table) -> bool:
@@ -672,9 +665,7 @@ class TablesGenerator(CodeGenerator):
                             table.constraints.remove(constraint)
                             if not isinstance(table.c[colname].type, Enum):
                                 options = _re_enum_item.findall(items)
-                                table.c[colname].type = Enum(
-                                    *options, native_enum=False
-                                )
+                                table.c[colname].type = Enum(*options, native_enum=False)
 
                             continue
 
@@ -858,9 +849,7 @@ class DeclarativeGenerator(TablesGenerator):
 
         # Rename models and their attributes that conflict with imports or other
         # attributes
-        global_names = {
-            name for namespace in self.imports.values() for name in namespace
-        }
+        global_names = {name for namespace in self.imports.values() for name in namespace}
         for model in models_by_table_name.values():
             self.generate_model_name(model, global_names)
             global_names.add(model.name)
@@ -924,8 +913,7 @@ class DeclarativeGenerator(TablesGenerator):
                 )
                 if len(common_fk_constraints) > 1:
                     relationship.foreign_keys = [
-                        source.get_column_attribute(key)
-                        for key in constraint.column_keys
+                        source.get_column_attribute(key) for key in constraint.column_keys
                     ]
 
                 # Generate the opposite end of the relationship in the target class
@@ -1113,9 +1101,7 @@ class DeclarativeGenerator(TablesGenerator):
                     if inflected_name:
                         preferred_name = inflected_name
 
-        relationship.name = self.find_free_name(
-            preferred_name, global_names, local_names
-        )
+        relationship.name = self.find_free_name(preferred_name, global_names, local_names)
 
     def render_models(self, models: list[Model]) -> str:
         rendered: list[str] = []
@@ -1149,8 +1135,7 @@ class DeclarativeGenerator(TablesGenerator):
 
         # Render relationship attributes
         rendered_relationship_attributes: list[str] = [
-            self.render_relationship(relationship)
-            for relationship in model.relationships
+            self.render_relationship(relationship) for relationship in model.relationships
         ]
 
         if rendered_relationship_attributes:
@@ -1371,10 +1356,7 @@ class DataclassGenerator(DeclarativeGenerator):
                 LiteralImport("sqlalchemy.orm", "MappedAsDataclass"),
             ],
             declarations=[
-                (
-                    f"class {self.base_class_name}(MappedAsDataclass, "
-                    "DeclarativeBase):"
-                ),
+                f"class {self.base_class_name}(MappedAsDataclass, DeclarativeBase):",
                 f"{self.indentation}pass",
             ],
             metadata_ref=f"{self.base_class_name}.metadata",
@@ -1468,9 +1450,7 @@ class SQLModelGenerator(DeclarativeGenerator):
 
         # Rename models and their attributes that conflict with imports or other
         # attributes
-        global_names = {
-            name for namespace in self.imports.values() for name in namespace
-        }
+        global_names = {name for namespace in self.imports.values() for name in namespace}
         for model in models_by_table_name.values():
             self.generate_model_name(model, global_names)
             global_names.add(model.name)
@@ -1667,9 +1647,7 @@ class AwareGenerator(SQLModelGenerator):
         for model in models:
             if isinstance(model, ModelClass):
                 functions = class_functions.get(model.table.name, [])
-                rendered.append(
-                    self.render_class_with_supabase_methods(model, functions)
-                )
+                rendered.append(self.render_class_with_supabase_methods(model, functions))
             else:
                 rendered.append(f"{model.name} = {self.render_table(model.table)}")
 
@@ -1724,9 +1702,11 @@ class AwareGenerator(SQLModelGenerator):
         docstring = self.render_docstring(func_meta, return_python_type)
 
         rpc_args = [
-            f'"{arg.name}": {"self." + arg.class_attribute if arg.class_sourced else arg.name}'
+            f'"{arg.name}": '
+            f'{"self." + arg.class_attribute if arg.class_sourced else arg.name}'
             for arg in func_meta.arguments
         ]
+
         rpc_args_str = ",\n".join(f"{self.indentation * 4}{arg}" for arg in rpc_args)
 
         method = f"""
@@ -1771,7 +1751,7 @@ class AwareGenerator(SQLModelGenerator):
 class ArgumentInfo:
     name: str
     type: str
-    default: any = None
+    default: Any = None
     class_sourced: bool = False
     class_attribute: str = ""
 
@@ -1833,17 +1813,15 @@ class FunctionGenerator:
                     class_functions[function_table].append(func_metadata)
             return class_functions
 
-    def parse_comments(self, comment: str) -> tuple[str, dict[str, any]]:
+    def parse_comments(self, comment: str) -> tuple[str, dict[str, Any]]:
         if not comment:
             return "", {}
 
-        docstring_match = re.search(
-            r"DOCSTRING:\s*(.*?)\nMETADATA:", comment, re.DOTALL
-        )
+        docstring_match = re.search(r"DOCSTRING:\s*(.*?)\nMETADATA:", comment, re.DOTALL)
         metadata_match = re.search(r"METADATA:(.*)", comment, re.DOTALL)
 
         docstring = docstring_match.group(1).strip() if docstring_match else ""
-        metadata: dict[str, any] = {}
+        metadata: dict[str, Any] = {}
 
         if metadata_match:
             metadata_content = metadata_match.group(1).strip()
