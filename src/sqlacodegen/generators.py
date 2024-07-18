@@ -6,7 +6,7 @@ import sys
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import import_module
 from inspect import Parameter
 from itertools import count
@@ -44,6 +44,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import CompileError
 from sqlalchemy.sql.elements import TextClause
+from sqlalchemy import create_engine, text
 
 from .models import (
     ColumnAttribute,
@@ -1629,7 +1630,6 @@ class AwareGenerator(SQLModelGenerator):
         super().collect_imports(models)
         self.remove_literal_import("sqlmodel", "SQLModel")
         self.add_literal_import("aware_sql_python_types.base_model", "AwareSQLModel")
-        # TODO: improve, determine based on python types.
         self.add_literal_import("typing", "Set")
 
     def generate_base(self) -> None:
@@ -1647,17 +1647,14 @@ class AwareGenerator(SQLModelGenerator):
                 if singular_name:
                     preferred_name = singular_name
 
-            # Only modification to the original method adding "Pg" prefix
             preferred_name = f"Pg{preferred_name}"
             model.name = self.find_free_name(preferred_name, global_names)
 
-            # Fill in the names for column attributes
             local_names: set[str] = set()
             for column_attr in model.columns:
                 self.generate_column_attr_name(column_attr, global_names, local_names)
                 local_names.add(column_attr.name)
 
-            # Fill in the names for relationship attributes
             for relationship in model.relationships:
                 self.generate_relationship_name(relationship, global_names, local_names)
                 local_names.add(relationship.name)
@@ -1680,19 +1677,19 @@ class AwareGenerator(SQLModelGenerator):
 
     def render_class_with_supabase_methods(
         self, model: ModelClass, functions: list[FunctionMetadata]
-    ):
-        # Render the base class with current SQLACODEGEN functionality
+    ) -> str:
         rendered_class = self.render_class(model)
 
-        # Generate and add RPC methods to the class
+        rendered_methods = []
         for func in functions:
             rpc_method = self.render_rpc_method(func)
-            rendered_class += rpc_method
+            rendered_methods.append(rpc_method)
+
+        rendered_class += "\n" + "\n".join(rendered_methods)
 
         return rendered_class
 
-    def parse_argument(self, arg):
-        # Regex to extract name, type, and optionally a default value
+    def parse_argument(self, arg: str) -> tuple[str, str, str | None]:
         pattern = r"^(\w+)\s+([\w\s\[\]]+?)(?:\s+DEFAULT\s+(.*))?$"
         match = re.match(pattern, arg, re.IGNORECASE)
         if not match:
@@ -1700,13 +1697,10 @@ class AwareGenerator(SQLModelGenerator):
         name, type_name, default = match.groups()
 
         python_type = get_python_type(type_name)
-        # Handling array defaults and removing PostgreSQL type casting from default values
         if default:
-            # Remove PostgreSQL type casting which is denoted by '::'
-            default = re.sub(r"::[\w\[\]]+", "", default)  # Remove any ::type parts
+            default = re.sub(r"::[\w\[\]]+", "", default)
             is_array = "[]" in type_name
             if is_array:
-                # Format as a Python list if it's an array type
                 default = default.replace("ARRAY", "").strip("[]")
                 default = f"[{default}]"
             if default == "NULL":
@@ -1714,73 +1708,72 @@ class AwareGenerator(SQLModelGenerator):
                 python_type = f"Optional[{python_type}]"
         return name, python_type, default
 
-    def render_rpc_method(self, func_meta: FunctionMetadata):
-        args = []
-        kwargs = []
+    def render_rpc_method(self, func_meta: FunctionMetadata) -> str:
+        python_name = func_meta.function_name or func_meta.name
 
-        # Process each argument
-        for arg in func_meta.argument_types:
-            name, python_type, default = self.parse_argument(arg)
+        arg_strings = [
+            f"{arg.name}: {get_python_type(arg.type)}"
+            for arg in func_meta.arguments
+            if not arg.class_sourced
+        ]
+        args_str = ", ".join(arg_strings)
 
-            # Append default value syntax if present
-            if default:
-                args.append(f"{name}: {python_type} = {default}")
-            else:
-                args.append(f"{name}: {python_type}")
-
-            kwargs.append(f'"{name}": {name}')
-        args_str = ", ".join(args)
-        kwargs_str = ", ".join(kwargs)
-
-        # Convert the return type from SQL to Python
         return_python_type = get_python_type(func_meta.return_type)
-        docstring_full = f'"""Returns the result as a {return_python_type}."""'
 
-        # Indentation settings
-        indentation = "    "  # Standard 4 spaces for Python
-        double_indentation = indentation * 2
-        triple_indentation = indentation * 3
+        # Generate docstring using render_docstring
+        docstring = self.render_docstring(func_meta, return_python_type)
 
-        # Correctly format the docstring
-        docstring_indented = func_meta.docstring.replace(
-            "\n", "\n" + double_indentation
+        rpc_args = [
+            f'"{arg.name}": {"self." + arg.class_attribute if arg.class_sourced else arg.name}'
+            for arg in func_meta.arguments
+        ]
+        rpc_args_str = ",\n".join(f"{self.indentation * 4}{arg}" for arg in rpc_args)
+
+        method = f"""
+{self.indentation}def {python_name}(self, {args_str}) -> {return_python_type}:
+{docstring}
+{self.indentation * 2}return self.get_supabase_client().rpc(
+{self.indentation * 3}"{func_meta.name}",
+{self.indentation * 3}{{
+{rpc_args_str}
+{self.indentation * 3}}}
+{self.indentation * 2}).execute().data"""
+        return method
+
+    def render_docstring(self, func_meta: FunctionMetadata, return_type: str) -> str:
+        filtered_docstring = self.filter_docstring(func_meta)
+
+        docstring = (
+            f'{self.indentation * 2}"""\n{self.indentation}{filtered_docstring}\n\n'
         )
-        docstring_full = (
-            f'{double_indentation}"""\n'
-            f"{double_indentation}{docstring_indented}\n"
-            f"{double_indentation}\n"
-            f"{double_indentation}Returns:\n"
-            f"{triple_indentation}{return_python_type}\n"
-            f'{double_indentation}"""'
+        docstring += (
+            f"{self.indentation * 2}Returns:\n{self.indentation * 2}    {return_type}\n"
         )
+        docstring += f'{self.indentation * 2}"""'
+        return docstring
 
-        # Generate method signature
-        if args_str:
-            method_signature = (
-                f"def {func_meta.name}(cls, {args_str}) -> {return_python_type}:"
-            )
-        else:
-            method_signature = f"def {func_meta.name}(cls) -> {return_python_type}:"
+    def filter_docstring(self, func_meta: FunctionMetadata) -> str:
+        lines = func_meta.docstring.split("\n")
+        filtered_lines = []
+        param_section = False
+        for line in lines:
+            if "Parameters:" in line:
+                param_section = True
+            if param_section and any(
+                arg.name in line for arg in func_meta.arguments if arg.class_sourced
+            ):
+                continue
+            filtered_lines.append(line)
+        return "\n".join(f"{self.indentation}{line}" for line in filtered_lines)
 
-        # Create the function definition with the correct indentation
-        function_definition = (
-            f"\n\n{indentation}@classmethod\n"
-            f"{indentation}{method_signature}\n"
-            f"{docstring_full}\n"
-            f'{double_indentation}return cls.get_supabase_client().rpc(\n'
-            f'{double_indentation}"{func_meta.name}", \n'
-            f'{double_indentation}{{{kwargs_str}}}\n'
-            f'{double_indentation}).execute().data'
-        )
-        return function_definition
 
-    def parse_table_structure(self, return_type_str: str):
-        columns = {}
-        parts = return_type_str.strip("TABLE()").split(",")
-        for part in parts:
-            name, type_str = part.split()
-            columns[name.strip()] = type_str.strip()
-        return columns
+@dataclass
+class ArgumentInfo:
+    name: str
+    type: str
+    default: any = None
+    class_sourced: bool = False
+    class_attribute: str = ""
 
 
 @dataclass
@@ -1788,13 +1781,14 @@ class FunctionMetadata:
     schema: str
     name: str
     return_type: str
-    argument_types: list[str]
+    arguments: list[ArgumentInfo]
     docstring: str = ""
+    function_table: str = ""
+    function_name: str = ""
+    class_sourced_args: dict[str, str] = field(default_factory=dict)
 
 
 class FunctionGenerator:
-    """Fetches and parses function metadata from a PostgreSQL database."""
-
     def __init__(self, engine_url: str):
         self.engine = create_engine(engine_url)
 
@@ -1818,27 +1812,28 @@ class FunctionGenerator:
             class_functions: dict[str, list[FunctionMetadata]] = {}
             for row in result.fetchall():
                 docstring, metadata = self.parse_comments(row[4])
-                class_name = metadata.get("Table Method", None)
-                if class_name:
+                function_table = metadata.get("Function Table")
+                if function_table:
+                    class_sourced_args = self.parse_class_sourced_args(
+                        metadata.get("Class Sourced Args", "")
+                    )
+                    arguments = self.parse_arguments(row[3], class_sourced_args)
                     func_metadata = FunctionMetadata(
                         schema=row[0],
                         name=row[1],
                         return_type=row[2],
-                        argument_types=[
-                            arg.strip() for arg in row[3].split(",") if arg
-                        ],
+                        arguments=arguments,
                         docstring=docstring,
+                        function_table=function_table,
+                        function_name=metadata.get("Function Name", row[1]),
+                        class_sourced_args=class_sourced_args,
                     )
-                    if class_name not in class_functions:
-                        class_functions[class_name] = []
-                    class_functions[class_name].append(func_metadata)
+                    if function_table not in class_functions:
+                        class_functions[function_table] = []
+                    class_functions[function_table].append(func_metadata)
             return class_functions
 
-    def parse_comments(self, comment) -> tuple[str, dict[str, str]]:
-        """
-        Uses regular expressions to extract docstrings and metadata from function
-         comments.
-        """
+    def parse_comments(self, comment: str) -> tuple[str, dict[str, any]]:
         if not comment:
             return "", {}
 
@@ -1848,7 +1843,7 @@ class FunctionGenerator:
         metadata_match = re.search(r"METADATA:(.*)", comment, re.DOTALL)
 
         docstring = docstring_match.group(1).strip() if docstring_match else ""
-        metadata = {}
+        metadata: dict[str, any] = {}
 
         if metadata_match:
             metadata_content = metadata_match.group(1).strip()
@@ -1858,6 +1853,41 @@ class FunctionGenerator:
                     metadata[key.strip()] = value.strip()
 
         return docstring, metadata
+
+    def parse_class_sourced_args(self, class_sourced_args_str: str) -> dict[str, str]:
+        class_sourced_args = {}
+        for arg in class_sourced_args_str.split(","):
+            arg = arg.strip()
+            if "=" in arg:
+                func_arg, class_attr = arg.split("=")
+                class_sourced_args[func_arg.strip()] = class_attr.strip()
+        return class_sourced_args
+
+    def parse_arguments(
+        self, args_string: str, class_sourced_args: dict[str, str]
+    ) -> list[ArgumentInfo]:
+        arguments = []
+        for arg in args_string.split(","):
+            arg = arg.strip()
+            if not arg:
+                continue
+            match = re.match(r"(\w+)\s+(\w+)(?:\s*=\s*(.+))?", arg)
+            if match:
+                name, type_, default = match.groups()
+                class_sourced = name in class_sourced_args
+                class_attribute = class_sourced_args.get(name, "")
+                arguments.append(
+                    ArgumentInfo(
+                        name=name,
+                        type=type_,
+                        default=default,
+                        class_sourced=class_sourced,
+                        class_attribute=class_attribute,
+                    )
+                )
+            else:
+                raise ValueError(f"Could not parse argument: {arg}")
+        return arguments
 
 
 def get_python_type(sql_type: str, is_array: bool = False) -> str:
