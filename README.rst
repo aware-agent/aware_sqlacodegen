@@ -1,8 +1,8 @@
-.. image:: https://github.com/agronholm/sqlacodegen/actions/workflows/test.yml/badge.svg
-  :target: https://github.com/agronholm/sqlacodegen/actions/workflows/test.yml
+.. image:: https://github.com/agronholm/sqlacodegen/actions/workflows/ci.yml/badge.svg
+  :target: https://github.com/agronholm/sqlacodegen/actions/workflows/ci.yml
   :alt: Build Status
-.. image:: https://coveralls.io/repos/github/agronholm/sqlacodegen/badge.svg?branch=master
-  :target: https://coveralls.io/github/agronholm/sqlacodegen?branch=master
+.. image:: https://coveralls.io/repos/github/aware-agent/aware_sqlacodegen/badge.svg?branch=main
+  :target: https://coveralls.io/github/aware-agent/aware_sqlacodegen?branch=main
   :alt: Code Coverage
 
 This is a tool that reads the structure of an existing database and generates the

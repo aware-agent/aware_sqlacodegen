@@ -48,13 +48,19 @@ def test_fancy_coltypes(generator: CodeGenerator) -> None:
         generator.generate(),
         """\
         from sqlalchemy import Boolean, Column, Enum, MetaData, Numeric, Table
+        import enum
+
+        class Blah(enum.Enum):
+            A = 'A'
+            B = 'B'
+
 
         metadata = MetaData()
 
 
         t_simple_items = Table(
             'simple_items', metadata,
-            Column('enum', Enum('A', 'B', name='blah')),
+            Column('enum', Enum(Blah)),
             Column('bool', Boolean),
             Column('number', Numeric(10, asdecimal=False))
         )
@@ -176,6 +182,7 @@ def test_enum_detection(generator: CodeGenerator) -> None:
         generator.generate(),
         """\
         from sqlalchemy import Column, Enum, MetaData, Table
+        import enum
 
         metadata = MetaData()
 

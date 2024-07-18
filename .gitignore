@@ -13,3 +13,6 @@
 dist
 build
 venv*
+
+# poetry
+poetry.lock
