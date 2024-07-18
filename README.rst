@@ -1,5 +1,5 @@
-.. image:: https://github.com/agronholm/sqlacodegen/actions/workflows/ci.yml/badge.svg
-  :target: https://github.com/agronholm/sqlacodegen/actions/workflows/ci.yml
+.. image:: https://github.com/aware-agent/aware_sqlacodegen/actions/workflows/ci.yml/badge.svg
+  :target: https://github.com/aware-agent/aware_sqlacodegen/actions/workflows/ci.yml
   :alt: Build Status
 .. image:: https://coveralls.io/repos/github/aware-agent/aware_sqlacodegen/badge.svg?branch=main
   :target: https://coveralls.io/github/aware-agent/aware_sqlacodegen?branch=main
