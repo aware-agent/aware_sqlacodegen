@@ -17,6 +17,14 @@ from sqlalchemy.sql.schema import (
     Table,
 )
 
+# public
+re_boolean_check_constraint = re.compile(r"(?:.*?\.)?(.*?) IN \(0, 1\)")
+re_column_name = re.compile(r'(?:(["`]?).*\1\.)?(["`]?)(.*)\2')
+re_enum_check_constraint = re.compile(r"(?:.*?\.)?(.*?) IN \((.+)\)")
+re_enum_item = re.compile(r"'(.*?)(?<!\\)'")
+re_invalid_identifier = re.compile(r"(?u)\W")
+
+# private
 _re_postgresql_nextval_sequence = re.compile(r"nextval\('(.+)'::regclass\)")
 _re_postgresql_sequence_delimiter = re.compile(r'(.*?)([."]|$)')
 
@@ -202,3 +210,103 @@ def decode_postgresql_sequence(clause: TextClause) -> tuple[str | None, str | No
                 schema, sequence = sequence, ""
 
     return schema, sequence
+
+
+def get_python_type(sql_type: str, is_array: bool = False) -> str:
+    """
+    Map PostgreSQL types to Python types.
+    """
+    type_mapping = {
+        # Numeric types
+        "smallint": "int",
+        "integer": "int",
+        "bigint": "int",
+        "decimal": "Decimal",
+        "numeric": "Decimal",
+        "real": "float",
+        "double precision": "float",
+        "serial": "int",
+        "bigserial": "int",
+        # Monetary types
+        "money": "str",
+        # Character types
+        "character varying": "str",
+        "varchar": "str",
+        "character": "str",
+        "char": "str",
+        "text": "str",
+        # Binary Data Types
+        "bytea": "bytes",
+        # Date/Time Types
+        "timestamp without time zone": "datetime",
+        "timestamp with time zone": "datetime",
+        "date": "date",
+        "time without time zone": "time",
+        "time with time zone": "time",
+        "interval": "timedelta",
+        # Boolean Type
+        "boolean": "bool",
+        # Enum Type
+        "enum": "Enum",  # Custom handling may be needed for specific enums
+        # Geometric Types
+        "point": "tuple",
+        "line": "str",
+        "lseg": "tuple",
+        "box": "tuple",
+        "path": "list",
+        "polygon": "list",
+        "circle": "tuple",
+        # Network Address Types
+        "cidr": "str",
+        "inet": "str",
+        "macaddr": "str",
+        # Bit String Types
+        "bit": "str",
+        "bit varying": "str",
+        # UUID Type
+        "uuid": "str",
+        # JSON Types
+        "json": "dict",
+        "jsonb": "dict",
+        # XML Type
+        "xml": "str",
+        # Full Text Search Types
+        "tsvector": "str",
+        "tsquery": "str",
+        # Other/miscellaneous types
+        "oid": "int",
+        "range": "range",  # Custom handling might be needed
+        # Void Type
+        "void": "None",
+    }
+
+    is_array, is_set, base_type = _is_array_or_set(sql_type)
+
+    python_type = type_mapping.get(base_type, "Any")
+
+    if is_array:
+        return f"List[{python_type}]"
+    if is_set:
+        return f"Set[{python_type}]"
+
+    return python_type
+    # # Array handling
+    # python_type = type_mapping.get(sql_type, "Any")
+    # return f"List[{python_type}]" if is_array else python_type
+
+
+def _is_array_or_set(sql_type: str) -> tuple[bool, bool, str]:
+    """
+    Determine if the SQL type is an array or set and return the base type.
+    """
+    sql_type = sql_type.lower()  # Convert to lowercase for easier comparison
+    is_array = sql_type.endswith("[]")
+    is_set = sql_type.startswith("setof ")
+
+    base_type = sql_type
+    if is_array:
+        base_type = sql_type[:-2]
+    elif is_set:
+        base_type = sql_type[6:]
+
+    return is_array, is_set, base_type

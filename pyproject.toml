@@ -49,11 +49,11 @@ pgvector = "^0.2.4"
 sqlacodegen = "sqlacodegen.cli:main"
 
 [tool.poetry.plugins."sqlacodegen.generators"]
-tables = "sqlacodegen.generators:TablesGenerator"
-declarative = "sqlacodegen.generators:DeclarativeGenerator"
-dataclasses = "sqlacodegen.generators:DataclassGenerator"
-sqlmodels = "sqlacodegen.generators:SQLModelGenerator"
-aware = "sqlacodegen.generators:AwareGenerator"
+tables = "sqlacodegen.generators.tables:TablesGenerator"
+declarative = "sqlacodegen.generators.declarative:DeclarativeGenerator"
+dataclasses = "sqlacodegen.generators.dataclasses:DataclassGenerator"
+sqlmodels = "sqlacodegen.generators.sqlmodels:SQLModelGenerator"
+aware = "sqlacodegen.generators.aware:AwareGenerator"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

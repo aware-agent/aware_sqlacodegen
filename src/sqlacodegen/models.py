@@ -8,6 +8,23 @@ from sqlalchemy.sql.schema import Column, ForeignKeyConstraint, Table
 
 
 @dataclass
+class LiteralImport:
+    pkgname: str
+    name: str
+
+
+@dataclass
+class Base:
+    """Representation of MetaData for Tables, respectively Base for classes"""
+
+    literal_imports: list[LiteralImport]
+    declarations: list[str]
+    metadata_ref: str
+    decorator: str | None = None
+    table_metadata_declaration: str | None = None
+
+
+@dataclass
 class Model:
     table: Table
     name: str = field(init=False, default="")
