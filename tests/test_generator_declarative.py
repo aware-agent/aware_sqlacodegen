@@ -17,7 +17,8 @@ from sqlalchemy.schema import (
 from sqlalchemy.sql.expression import text
 from sqlalchemy.types import INTEGER, VARCHAR, Text
 
-from sqlacodegen.generators import CodeGenerator, DeclarativeGenerator
+from sqlacodegen.generators.tables import CodeGenerator
+from sqlacodegen.generators.declarative import DeclarativeGenerator
 
 from .conftest import validate_code
 

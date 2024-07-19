@@ -21,7 +21,7 @@ from sqlalchemy.sql.expression import text
 from sqlalchemy.sql.sqltypes import NullType
 from sqlalchemy.types import INTEGER, NUMERIC, SMALLINT, VARCHAR, Text
 
-from sqlacodegen.generators import CodeGenerator, TablesGenerator
+from sqlacodegen.generators.tables import CodeGenerator, TablesGenerator
 
 from .conftest import validate_code
 

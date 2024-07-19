@@ -8,7 +8,8 @@ from sqlalchemy.schema import Column, ForeignKeyConstraint, MetaData, Table
 from sqlalchemy.sql.expression import text
 from sqlalchemy.types import INTEGER, VARCHAR
 
-from sqlacodegen.generators import CodeGenerator, DataclassGenerator
+from sqlacodegen.generators.tables import CodeGenerator
+from sqlacodegen.generators.dataclasses import DataclassGenerator
 
 from .conftest import validate_code
 
