@@ -224,6 +224,9 @@ class SQLModelGenerator(DeclarativeGenerator):
         args, is_upward, is_to_many = self.render_relationship_args(
             rendered, relationship
         )
+        if not relationship.enable_upwards and is_upward:
+            return ""
+
         kwargs: Dict[str, Any] = {}
 
         annotation = repr(
@@ -240,12 +243,11 @@ class SQLModelGenerator(DeclarativeGenerator):
             annotation = f"Optional[{annotation}]"
 
         rendered_field = render_callable("Relationship", *args, kwargs=kwargs)
-        relationship_name = (
-            relationship.name if not is_to_many else relationship.name + "s"
-        )
 
-        if is_upward:
-            relationship_name = "_" + relationship_name
+        if relationship.rename_lists and is_to_many:
+            relationship_name = relationship.name + "_list"
+        else:
+            relationship_name = relationship.name
 
         return f"{relationship_name}: {annotation} = {rendered_field}"
 
@@ -258,15 +260,17 @@ class SQLModelGenerator(DeclarativeGenerator):
 
         rendered_args: List[str] = []
         back_populates_value = None
-        is_to_many = True  # Default to True unless explicitly set to False
+        is_to_many = relationship.type in (
+            RelationshipType.ONE_TO_MANY,
+            RelationshipType.MANY_TO_MANY,
+        )
 
         for arg in argument_list:
             if "back_populates" in arg:
                 rendered_args.append(arg)
                 back_populates_value = arg.split("=")[1].strip().strip("'\"")
-            elif "uselist" in arg:
-                rendered_args.append(arg)
-                is_to_many = "False" not in arg
+            elif "uselist=False" in arg:
+                rendered_args.append("sa_relationship_kwargs={'uselist': False}")
 
         # Determine if it's an upward relationship
         current_table = relationship.source.table.name

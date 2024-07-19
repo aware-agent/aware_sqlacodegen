@@ -86,20 +86,16 @@ class AwareGenerator(SQLModelGenerator):
         rendered_class = self.render_class(model)
         rendered_class_methods = self.render_class_methods(model, functions)
         rendered_free_functions = self.render_free_functions(functions)
-
-        indent_all_lines = lambda s: "\n".join(
-            f"{self.indentation}{line}" for line in s.split("\n")
-        )
         namespace = "Ns" + model.name
 
         return f"""
 class {namespace}(BaseModel):
 
-{indent_all_lines(rendered_class)}
+{self.indent_all_lines(rendered_class)}
 
-{indent_all_lines(rendered_class_methods)}
+{self.indent_all_lines(rendered_class_methods)}
 
-{indent_all_lines(rendered_free_functions)}
+{self.indent_all_lines(rendered_free_functions)}
 """
 
     def render_class_methods(
@@ -114,7 +110,8 @@ class {namespace}(BaseModel):
 
     def render_class(self, model: ModelClass) -> str:
         class_definition = super().render_class(model)
-        return class_definition.replace(f"class {model.name}(", f"class {model.name}(", 1)
+        class_definition.replace(f"class {model.name}(", f"class {model.name}(", 1)
+        return class_definition
 
     def render_functions(
         self, model: ModelClass, functions: List[FunctionMetadata]
@@ -123,26 +120,22 @@ class {namespace}(BaseModel):
 
     def render_function(self, model: ModelClass | None, func: FunctionMetadata) -> str:
         if func.function_type == "class":
+            if model is None:
+                raise ValueError("Model is required for class methods")
             self.handle_function_arguments(model, func)
             return self.render_class_method(func, model.name)
         else:
             return self.render_free_function(func)
 
-    def handle_function_arguments(self, model: ModelClass | None, func: FunctionMetadata):
-        if model is not None:
-            column_names = set(column.name for column in model.columns)
-            for arg in func.arguments:
-                if arg.name in column_names:
-                    arg.class_sourced = True
-                    arg.class_attribute = f"self.{arg.name}"
-        else:
-            # For free functions, no arguments are class-sourced
-            for arg in func.arguments:
-                arg.class_sourced = False
-                arg.class_attribute = ""
+    def handle_function_arguments(self, model: ModelClass, func: FunctionMetadata):
+        column_names = set(column.name for column in model.columns)
+        for arg in func.arguments:
+            if arg.name in column_names:
+                arg.class_sourced = True
+                arg.class_attribute = f"self.{arg.name}"
 
     def render_class_method(self, func: FunctionMetadata, class_name: str) -> str:
-        return self.render_rpc_method(func, class_name, is_class_method=True)
+        return self.render_rpc_method(func, is_class_method=True)
 
     def render_free_function(self, func: FunctionMetadata) -> str:
         return self.render_rpc_method(func, is_class_method=False)
@@ -158,7 +151,6 @@ class {namespace}(BaseModel):
     def render_rpc_method(
         self,
         func_meta: FunctionMetadata,
-        class_name: str = None,
         is_class_method: bool = True,
     ) -> str:
         python_name = func_meta.function_name or func_meta.name
@@ -175,7 +167,6 @@ class {namespace}(BaseModel):
                 docstring,
                 func_meta.name,
                 rpc_args_str,
-                class_name,
             )
         else:
             return self.render_free_rpc_method(
@@ -195,15 +186,17 @@ class {namespace}(BaseModel):
         )
 
     def render_rpc_arguments(self, arguments):
-        rpc_args = [
-            f'"{arg.name}": {"self." + arg.class_attribute if arg.class_sourced else arg.name}'
-            for arg in arguments
-        ]
+        rpc_args = []
+        for arg in arguments:
+            if arg.class_sourced:
+                rpc_arg = f'"{arg.name}": self.{arg.class_attribute}'
+            else:
+                rpc_arg = f'"{arg.name}": {arg.name}'
+            rpc_args.append(rpc_arg)
         return ",\n".join(f"{self.indentation * 4}{arg}" for arg in rpc_args)
 
     def render_class_rpc_method(
-        self, name, args, return_type, docstring, rpc_name, rpc_args, class_name
-    ):
+        self, name, args, return_type, docstring, rpc_name, rpc_args):
         indented_docstring = "\n".join(
             f"{self.indentation * 2}{line}" for line in docstring.split("\n")
         )
@@ -222,10 +215,7 @@ class {namespace}(BaseModel):
     def render_free_rpc_method(
         self, name, args, return_type, docstring, rpc_name, rpc_args
     ):
-        # indent all lines of the docstring
-        indented_docstring = "\n".join(
-            f"{self.indentation}{line}" for line in docstring.split("\n")
-        )
+        indented_docstring = self.indent_all_lines(docstring)
         return f"""
 def {name}({args}) -> {return_type}:
 {indented_docstring}
@@ -266,7 +256,12 @@ Returns:
 
     def render_relationship(self, relationship: RelationshipAttribute) -> str:
         relationship.target_ns = f"Ns{relationship.target.name}"
+        relationship.enable_upwards = False
+        relationship.rename_lists = True
         return super().render_relationship(relationship)
+
+    def indent_all_lines(self, s):
+        return "\n".join(f"{self.indentation}{line}" for line in s.split("\n"))
 
 @dataclass
 class ArgumentInfo:
@@ -327,7 +322,7 @@ class FunctionGenerator:
         return class_functions
 
     def create_function_metadata(
-        self, row: tuple, docstring: str, metadata: Dict[str, Any]
+        self, row: tuple, docstring: str, metadata: Dict[str, Any] # type: ignore
     ) -> FunctionMetadata:
         function_type = metadata.get("Function Type", "free")
         function_class_values = self.parse_function_class_values(

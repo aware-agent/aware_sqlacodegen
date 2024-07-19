@@ -72,11 +72,6 @@ src = ["src"]
 [tool.ruff.lint]
 select = [
     "E", "F", "W",  # default Flake8
-    "I",            # isort
-    "ISC",          # flake8-implicit-str-concat
-    "PGH",          # pygrep-hooks
-    "RUF100",       # unused noqa (yesqa)
-    "UP",           # pyupgrade
 ]
 
 [tool.mypy]

@@ -86,6 +86,8 @@ class RelationshipAttribute:
     primaryjoin: list[JoinType] = field(default_factory=list)
     secondaryjoin: list[JoinType] = field(default_factory=list)
     name: str = field(init=False, default="")
+    enable_upwards: bool = True
+    rename_lists: bool = False
 
     def __repr__(self) -> str:
         return (
