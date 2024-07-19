@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import Any, List, Tuple, Dict
 
 from sqlalchemy import (
     Column,
@@ -221,8 +221,10 @@ class SQLModelGenerator(DeclarativeGenerator):
 
     def render_relationship(self, relationship: RelationshipAttribute) -> str:
         rendered = super().render_relationship(relationship).partition(" = ")[2]
-        args = self.render_relationship_args(rendered)
-        kwargs: dict[str, Any] = {}
+        args, is_upward, is_to_many = self.render_relationship_args(
+            rendered, relationship
+        )
+        kwargs: Dict[str, Any] = {}
 
         annotation = repr(
             (f"{relationship.target_ns}.{relationship.target.name}")
@@ -230,10 +232,7 @@ class SQLModelGenerator(DeclarativeGenerator):
             else relationship.target.name
         )
 
-        if relationship.type in (
-            RelationshipType.ONE_TO_MANY,
-            RelationshipType.MANY_TO_MANY,
-        ):
+        if is_to_many:
             self.add_literal_import("typing", "List")
             annotation = f"List[{annotation}]"
         else:
@@ -241,19 +240,40 @@ class SQLModelGenerator(DeclarativeGenerator):
             annotation = f"Optional[{annotation}]"
 
         rendered_field = render_callable("Relationship", *args, kwargs=kwargs)
-        return f"{relationship.name}: {annotation} = {rendered_field}"
+        relationship_name = (
+            relationship.name if not is_to_many else relationship.name + "s"
+        )
 
-    def render_relationship_args(self, arguments: str) -> list[str]:
+        if is_upward:
+            relationship_name = "_" + relationship_name
+
+        return f"{relationship_name}: {annotation} = {rendered_field}"
+
+    def render_relationship_args(
+        self, arguments: str, relationship: RelationshipAttribute
+    ) -> Tuple[List[str], bool, bool]:
         argument_list = arguments.split(",")
-        # delete ')' and ' ' from args
-        argument_list[-1] = argument_list[-1][:-1]
-        argument_list = [argument[1:] for argument in argument_list]
+        argument_list[-1] = argument_list[-1].rstrip(") ")
+        argument_list = [argument.strip() for argument in argument_list]
 
-        rendered_args: list[str] = []
+        rendered_args: List[str] = []
+        back_populates_value = None
+        is_to_many = True  # Default to True unless explicitly set to False
+
         for arg in argument_list:
             if "back_populates" in arg:
                 rendered_args.append(arg)
-            if "uselist=False" in arg:
-                rendered_args.append("sa_relationship_kwargs={'uselist': False}")
+                back_populates_value = arg.split("=")[1].strip().strip("'\"")
+            elif "uselist" in arg:
+                rendered_args.append(arg)
+                is_to_many = "False" not in arg
 
-        return rendered_args
+        # Determine if it's an upward relationship
+        current_table = relationship.source.table.name
+        target_table = relationship.target.table.name
+
+        is_upward = (back_populates_value == current_table) or (
+            current_table == target_table
+        )
+
+        return rendered_args, is_upward, is_to_many

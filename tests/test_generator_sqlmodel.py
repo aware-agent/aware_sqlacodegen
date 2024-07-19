@@ -14,8 +14,8 @@ from sqlalchemy.schema import (
 )
 from sqlalchemy.types import INTEGER, VARCHAR
 
+from sqlacodegen.generators.sqlmodels import SQLModelGenerator
 from sqlacodegen.generators.tables import CodeGenerator
-from sqlacodegen.generators.sqlmodels import SQLModelGenerator 
 
 from .conftest import validate_code
 
