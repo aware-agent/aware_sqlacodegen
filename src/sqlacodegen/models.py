@@ -77,6 +77,7 @@ class RelationshipAttribute:
     type: RelationshipType
     source: ModelClass
     target: ModelClass
+    target_ns: str = field(init=False, default="")
     constraint: ForeignKeyConstraint | None = None
     association_table: Model | None = None
     backref: RelationshipAttribute | None = None

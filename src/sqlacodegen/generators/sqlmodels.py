@@ -223,7 +223,12 @@ class SQLModelGenerator(DeclarativeGenerator):
         rendered = super().render_relationship(relationship).partition(" = ")[2]
         args = self.render_relationship_args(rendered)
         kwargs: dict[str, Any] = {}
-        annotation = repr(relationship.target.name)
+
+        annotation = repr(
+            (f"{relationship.target_ns}.{relationship.target.name}")
+            if relationship.target_ns
+            else relationship.target.name
+        )
 
         if relationship.type in (
             RelationshipType.ONE_TO_MANY,
