@@ -150,7 +150,8 @@ def _{property_name}(self) -> "Ns{target_class}.{target_class}":
 @property
 def {property_name}(self) -> Optional["Ns{referencing_model}.{referencing_model}"]:
 {self.indentation}"""
-{self.indentation}Reverse referenced instance of Ns{referencing_model}.{referencing_model} that references this instance.
+{self.indentation}Reverse referenced instance of Ns{referencing_model}.{referencing_model}\
+ that references this instance.
 {self.indentation}"""
 {self.indentation}return Ns{referencing_model}.{referencing_model}.get(self.{primary_key}, "{fk_field}")
 '''
