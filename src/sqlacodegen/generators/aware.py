@@ -98,6 +98,31 @@ class {namespace}(BaseModel):
 {self.indent_all_lines(rendered_free_functions)}
 """
 
+    def render_class_properties(self, model: ModelClass) -> str:
+        properties = []
+        for fk in model.table.foreign_keys:
+            target_table = fk.column.table
+            property_name = self.to_snake_case(target_table.name)
+            target_class = self.to_pascal_case(target_table.name)
+            local_column = fk.parent.name
+            target_column = fk.column.name
+
+            property_def = f"""
+@property
+def {property_name}(self) -> "Ns{target_class}.{target_class}":
+    return Ns{target_class}.{target_class}.get(self.{local_column}, "{target_column}")
+"""
+            properties.append(property_def)
+        
+        return "\n".join(properties)
+
+    def to_snake_case(self, name: str) -> str:
+        return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
+
+    def to_pascal_case(self, name: str) -> str:
+        return ''.join(word.capitalize() for word in name.split('_'))
+
+
     def render_class_methods(
         self, model: ModelClass, functions: List[FunctionMetadata]
     ) -> str:
@@ -111,6 +136,7 @@ class {namespace}(BaseModel):
     def render_class(self, model: ModelClass) -> str:
         class_definition = super().render_class(model)
         class_definition.replace(f"class {model.name}(", f"class {model.name}(", 1)
+        class_definition += self.indent_all_lines(self.render_class_properties(model))
         return class_definition
 
     def render_functions(
@@ -257,6 +283,7 @@ Returns:
     def render_relationship(self, relationship: RelationshipAttribute) -> str:
         relationship.target_ns = f"Ns{relationship.target.name}"
         relationship.enable_upwards = False
+        #relationship.prefix_upwards = True
         relationship.rename_lists = True
         return super().render_relationship(relationship)
 

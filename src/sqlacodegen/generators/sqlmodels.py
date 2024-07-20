@@ -249,6 +249,9 @@ class SQLModelGenerator(DeclarativeGenerator):
         else:
             relationship_name = relationship.name
 
+        if is_upward and relationship.prefix_upwards:
+            relationship_name = f"_{relationship_name}"
+
         return f"{relationship_name}: {annotation} = {rendered_field}"
 
     def render_relationship_args(
