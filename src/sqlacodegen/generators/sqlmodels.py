@@ -221,10 +221,10 @@ class SQLModelGenerator(DeclarativeGenerator):
 
     def render_relationship(self, relationship: RelationshipAttribute) -> str:
         rendered = super().render_relationship(relationship).partition(" = ")[2]
-        args, is_upward, is_to_many = self.render_relationship_args(
+        args, is_private, is_to_many = self.render_relationship_args(
             rendered, relationship
         )
-        if not relationship.enable_upwards and is_upward:
+        if not relationship.enable_private and is_private:
             return ""
 
         kwargs: Dict[str, Any] = {}
@@ -249,7 +249,7 @@ class SQLModelGenerator(DeclarativeGenerator):
         else:
             relationship_name = relationship.name
 
-        if is_upward and relationship.prefix_upwards:
+        if is_private and relationship.prefix_private:
             relationship_name = f"_{relationship_name}"
 
         return f"{relationship_name}: {annotation} = {rendered_field}"
@@ -279,8 +279,8 @@ class SQLModelGenerator(DeclarativeGenerator):
         current_table = relationship.source.table.name
         target_table = relationship.target.table.name
 
-        is_upward = (back_populates_value == current_table) or (
+        is_private = (back_populates_value == current_table) or (
             current_table == target_table
         )
 
-        return rendered_args, is_upward, is_to_many
+        return rendered_args, is_private, is_to_many

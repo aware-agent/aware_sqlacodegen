@@ -41,7 +41,6 @@ class AwareGenerator(SQLModelGenerator):
             base_class_name=base_class_name,
         )
         self.function_generator = FunctionGenerator(self.bind.engine.url)
-        self.namespaces: List[str] = []
 
     def generate(self) -> Any:
         unformatted_output = super().generate()
@@ -56,6 +55,11 @@ class AwareGenerator(SQLModelGenerator):
 
         return apply_black_formatter(unformatted_output)
 
+    def generate_models(self) -> list[Model]:
+        models = super().generate_models()
+        self.reverse_relationships = self.build_reverse_relationships(models)
+        return models
+
     def collect_imports(self, models: Iterable[Model]) -> None:
         super().collect_imports(models)
         self.remove_literal_import("sqlmodel", "SQLModel")
@@ -66,6 +70,21 @@ class AwareGenerator(SQLModelGenerator):
             "SupabaseClientHandler",
         )
         self.add_literal_import("pydantic", "BaseModel")
+
+    def build_reverse_relationships(
+        self, models: List[Model]
+    ) -> Dict[str, List[tuple[str, str]]]:
+
+        reverse_relationships = {}
+        for model in models:
+            for constraint in model.table.foreign_key_constraints:
+                referenced_table = constraint.referred_table.name
+                if referenced_table not in reverse_relationships:
+                    reverse_relationships[referenced_table] = []
+                reverse_relationships[referenced_table].append(
+                    (model.name, constraint.column_keys[0])
+                )
+        return reverse_relationships
 
     def render_models(self, models: List[Model]) -> str:
         rendered: List[str] = []
@@ -99,29 +118,56 @@ class {namespace}(BaseModel):
 """
 
     def render_class_properties(self, model: ModelClass) -> str:
-        properties = []
-        for fk in model.table.foreign_keys:
-            target_table = fk.column.table
-            property_name = self.to_snake_case(target_table.name)
-            target_class = self.to_pascal_case(target_table.name)
-            local_column = fk.parent.name
-            target_column = fk.column.name
+        def render_forward_properties():
+            properties = []
+            for fk in model.table.foreign_keys:
+                target_table = fk.column.table
+                property_name = self.to_snake_case(target_table.name)
+                target_class = self.to_pascal_case(target_table.name)
+                local_column = fk.parent.name
+                target_column = fk.column.name
 
-            property_def = f"""
+                property_def = f'''
 @property
-def {property_name}(self) -> "Ns{target_class}.{target_class}":
-    return Ns{target_class}.{target_class}.get(self.{local_column}, "{target_column}")
-"""
-            properties.append(property_def)
-        
-        return "\n".join(properties)
+def _{property_name}(self) -> "Ns{target_class}.{target_class}":
+{self.indentation}"""
+{self.indentation}Forward Association to an Ns{target_class}.{target_class} instance.
+{self.indentation}"""
+{self.indentation}return Ns{target_class}.{target_class}.get(self.{local_column}, "{target_column}")
+'''
+                properties.append(property_def)
+            return properties
+
+        def render_reverse_properties():
+            properties = []
+            if model.table.name in self.reverse_relationships:
+                primary_key = next(col.name for col in model.table.primary_key.columns)
+                for referencing_model, fk_field in self.reverse_relationships[
+                    model.table.name
+                ]:
+                    property_name = f"{self.to_snake_case(referencing_model)}"
+                    property_def = f'''
+@property
+def {property_name}(self) -> Optional["Ns{referencing_model}.{referencing_model}"]:
+{self.indentation}"""
+{self.indentation}Reverse referenced instance of Ns{referencing_model}.{referencing_model} that references this instance.
+{self.indentation}"""
+{self.indentation}return Ns{referencing_model}.{referencing_model}.get(self.{primary_key}, "{fk_field}")
+'''
+                    properties.append(property_def)
+            return properties
+
+        forward_properties = render_forward_properties()
+        reverse_properties = render_reverse_properties()
+
+        all_properties = forward_properties + reverse_properties
+        return "\n".join(all_properties)
 
     def to_snake_case(self, name: str) -> str:
-        return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
     def to_pascal_case(self, name: str) -> str:
-        return ''.join(word.capitalize() for word in name.split('_'))
-
+        return "".join(word.capitalize() for word in name.split("_"))
 
     def render_class_methods(
         self, model: ModelClass, functions: List[FunctionMetadata]
@@ -222,7 +268,8 @@ def {property_name}(self) -> "Ns{target_class}.{target_class}":
         return ",\n".join(f"{self.indentation * 4}{arg}" for arg in rpc_args)
 
     def render_class_rpc_method(
-        self, name, args, return_type, docstring, rpc_name, rpc_args):
+        self, name, args, return_type, docstring, rpc_name, rpc_args
+    ):
         indented_docstring = "\n".join(
             f"{self.indentation * 2}{line}" for line in docstring.split("\n")
         )
@@ -282,13 +329,14 @@ Returns:
 
     def render_relationship(self, relationship: RelationshipAttribute) -> str:
         relationship.target_ns = f"Ns{relationship.target.name}"
-        relationship.enable_upwards = False
-        #relationship.prefix_upwards = True
+        relationship.enable_private = False
+        # relationship.prefix_private = True
         relationship.rename_lists = True
         return super().render_relationship(relationship)
 
     def indent_all_lines(self, s):
         return "\n".join(f"{self.indentation}{line}" for line in s.split("\n"))
+
 
 @dataclass
 class ArgumentInfo:
@@ -349,7 +397,7 @@ class FunctionGenerator:
         return class_functions
 
     def create_function_metadata(
-        self, row: tuple, docstring: str, metadata: Dict[str, Any] # type: ignore
+        self, row: tuple, docstring: str, metadata: Dict[str, Any]  # type: ignore
     ) -> FunctionMetadata:
         function_type = metadata.get("Function Type", "free")
         function_class_values = self.parse_function_class_values(
