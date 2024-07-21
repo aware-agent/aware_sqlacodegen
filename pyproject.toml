@@ -22,9 +22,10 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = "^3.12"
-SQLAlchemy = "^2.0.23"
 inflect = "^4.0.0"
 black = "^24.4.2"
+SQLAlchemy = "^2.0.31"
+sqlmodel = "^0.0.21"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4"
@@ -33,9 +34,6 @@ psycopg2-binary = "*"
 mysql-connector-python = "*"
 ruff = "^0.5.2"
 mypy = "^1.10.1"
-
-[tool.poetry.group.sqlmodel.dependencies]
-sqlmodel = "^0.0.12"
 
 [tool.poetry.group.citext.dependencies]
 sqlalchemy-citext = "^1.7.0"
