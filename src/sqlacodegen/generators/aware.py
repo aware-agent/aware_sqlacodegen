@@ -291,6 +291,7 @@ def {property_name}(self) -> Optional["Ns{referencing_model}.{referencing_model}
     ):
         indented_docstring = self.indent_all_lines(docstring)
         return f"""
+@staticmethod
 def {name}({args}) -> {return_type}:
 {indented_docstring}
 {self.indentation}return SupabaseClientHandler().get_supabase_client().rpc(
