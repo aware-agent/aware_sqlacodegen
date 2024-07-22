@@ -22,13 +22,13 @@ from ..utils import get_python_type
 from ..models import RelationshipAttribute, RelationshipType
 from .sqlmodels import SQLModelGenerator
 
-
 @dataclass
 class ReverseRelationship:
     referencing_model: str
     foreign_key_field: str
-    relationship_type: Optional[RelationshipType]
-
+    local_column: str
+    target_column: str
+    to_many: bool
 
 class AwareGenerator(SQLModelGenerator):
     def __init__(
@@ -70,7 +70,7 @@ class AwareGenerator(SQLModelGenerator):
             print(f"  {table}:")
             for rel in relationships:
                 print(
-                    f"    {rel.referencing_model} -> {rel.foreign_key_field}: {rel.relationship_type}"
+                    f"     {rel.referencing_model} -> {rel.foreign_key_field} - {rel.target_column} -> {rel.local_column} -- {rel.to_many}"
                 )
         return models
 
@@ -91,57 +91,40 @@ class AwareGenerator(SQLModelGenerator):
         self, models: List[Model]
     ) -> Dict[str, List[ReverseRelationship]]:
         reverse_relationships: Dict[str, List[ReverseRelationship]] = {}
-
-        def _process_model_class(
-            model: ModelClass, reverse_relationships: Dict[str, List[ReverseRelationship]]
-        ):
-            for relationship in model.relationships:
-                target_table = relationship.target.table.name
-                if target_table not in reverse_relationships:
-                    reverse_relationships[target_table] = []
-
-                # Find the foreign key column for this relationship
-                fk_column = None
-                for fk in model.table.foreign_keys:
-                    if fk.column.table == relationship.target.table:
-                        fk_column = fk.parent
-                        break
-
-                if fk_column is not None:
-                    reverse_relationships[target_table].append(
-                        ReverseRelationship(
-                            referencing_model=model.name,
-                            foreign_key_field=fk_column.name,
-                            relationship_type=relationship.type,
-                        )
-                    )
-                else:
-                    print(
-                        f"Warning: Could not find foreign key for relationship {relationship.name} in {model.name}"
-                    )
-
-        def _process_model(
-            model: Model, reverse_relationships: Dict[str, List[ReverseRelationship]]
-        ):
-            for constraint in model.table.foreign_key_constraints:
-                referenced_table = constraint.referred_table.name
-                if referenced_table not in reverse_relationships:
-                    reverse_relationships[referenced_table] = []
-
-                for fk in constraint.elements:
-                    reverse_relationships[referenced_table].append(
-                        ReverseRelationship(
-                            referencing_model=model.name,
-                            foreign_key_field=fk.parent.name,
-                            relationship_type=None,
-                        )
-                    )
+        fk_cache: Dict[str, Dict[str, Tuple[str, str]]] = {}
 
         for model in models:
             if isinstance(model, ModelClass):
-                _process_model_class(model, reverse_relationships)
-            else:
-                _process_model(model, reverse_relationships)
+                fk_cache[model.name] = {
+                    fk.column.table.name: (fk.parent.name, fk.column.name)
+                    for fk in model.table.foreign_keys
+                }
+
+        for model in models:
+            if isinstance(model, ModelClass):
+                for relationship in model.relationships:
+                    target_table = relationship.target.table.name
+                    source_table = model.name
+                    
+                    if target_table in fk_cache.get(source_table, {}):
+                        local_column, target_column = fk_cache[source_table][target_table]
+                        
+                        if target_table not in reverse_relationships:
+                            reverse_relationships[target_table] = []
+
+                        to_many = relationship.type in [RelationshipType.MANY_TO_ONE, RelationshipType.MANY_TO_MANY]
+
+                        reverse_relationships[target_table].append(
+                            ReverseRelationship(
+                                referencing_model=source_table,
+                                foreign_key_field=local_column,
+                                local_column=target_column,
+                                target_column=local_column,
+                                to_many=to_many
+                            )
+                        )
+                    else:
+                        print(f"Warning: Could not find foreign key for relationship {relationship.name} in {source_table}")
 
         return reverse_relationships
 
@@ -179,7 +162,7 @@ class {namespace}:
     def render_class_properties(self, model: ModelClass) -> str:
 
         def render_forward_properties():
-            return []
+            #return []
             properties = []
             for fk in model.table.foreign_keys:
                 target_table = fk.column.table
@@ -202,37 +185,30 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
         def render_reverse_properties():
             properties = []
             if model.table.name in self.reverse_relationships:
-                primary_key = next(col.name for col in model.table.primary_key.columns)
                 for reverse_rel in self.reverse_relationships[model.table.name]:
                     property_name = f"{self.to_snake_case(reverse_rel.referencing_model)}"
-                    match reverse_rel.relationship_type:
-                        case RelationshipType.ONE_TO_MANY | RelationshipType.MANY_TO_MANY:
-                            property_def = f'''
-@classmethod
-def get_{property_name}_list(cls, extra_filters: List[Filter] = []) -> List[Ns{reverse_rel.referencing_model}.{reverse_rel.referencing_model}]:
-{self.indentation}"""
-{self.indentation}Reverse referenced instances of Ns{reverse_rel.referencing_model}.{reverse_rel.referencing_model} with optional additional filters.
-{self.indentation}"""
-{self.indentation}return Ns{reverse_rel.referencing_model}.{reverse_rel.referencing_model}.get_list("{reverse_rel.foreign_key_field}", cls.{primary_key}, extra_filters)
-'''
-                        case RelationshipType.ONE_TO_ONE | RelationshipType.MANY_TO_ONE:
-                            property_def = f'''
-@classmethod
-def get_{property_name}(cls) -> Optional[Ns{reverse_rel.referencing_model}.{reverse_rel.referencing_model}]:
-{self.indentation}"""
-{self.indentation}Reverse referenced instance of Ns{reverse_rel.referencing_model}.{reverse_rel.referencing_model}.
-{self.indentation}"""
-{self.indentation}return Ns{reverse_rel.referencing_model}.{reverse_rel.referencing_model}.get("{reverse_rel.foreign_key_field}", cls.{primary_key})
-'''
-                        case _:
-                            print(
-                                "Skipping unknown relationship type for reverse property",
-                                reverse_rel.referencing_model,
-                                reverse_rel.foreign_key_field,
-                            )
-                            continue
+                    target_class = reverse_rel.referencing_model  # Keep original casing
 
+                    if reverse_rel.to_many:
+                        property_def = f'''
+@classmethod
+def get_{property_name}_list(cls, extra_filters: List[Filter] = []) -> List[Ns{target_class}.{target_class}]:
+{self.indentation}"""
+{self.indentation}Reverse referenced instances of Ns{target_class}.{target_class} with optional additional filters.
+{self.indentation}"""
+{self.indentation}return Ns{target_class}.{target_class}.get_list("{reverse_rel.target_column}", cls.{reverse_rel.local_column}, extra_filters)
+'''
+                    else:
+                        property_def = f'''
+@classmethod
+def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
+{self.indentation}"""
+{self.indentation}Reverse referenced instance of Ns{target_class}.{target_class}.
+{self.indentation}"""
+{self.indentation}return Ns{target_class}.{target_class}.get("{reverse_rel.target_column}", cls.{reverse_rel.local_column})
+'''
                     properties.append(property_def)
+
             return properties
 
         forward_properties = render_forward_properties()
