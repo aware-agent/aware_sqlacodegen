@@ -131,6 +131,7 @@ class SQLModelGenerator(DeclarativeGenerator):
         )
 
     def collect_imports(self, models: Iterable[Model]) -> None:
+        self.add_literal_import("__future__", "annotations")
         super(DeclarativeGenerator, self).collect_imports(models)
         if any(isinstance(model, ModelClass) for model in models):
             self.add_literal_import("sqlmodel", "SQLModel")
@@ -229,8 +230,8 @@ class SQLModelGenerator(DeclarativeGenerator):
 
         kwargs: Dict[str, Any] = {}
 
-        annotation = repr(
-            (f"{relationship.target_ns}.{relationship.target.name}")
+        annotation = (
+            f"{relationship.target_ns}.{relationship.target.name}"
             if relationship.target_ns
             else relationship.target.name
         )
