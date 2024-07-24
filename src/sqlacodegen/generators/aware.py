@@ -3,11 +3,15 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple, Optional
+from overrides import overrides
+from typing import Any, Dict, List, Tuple
 import black
 
 from sqlalchemy import (
+    Column,
     MetaData,
+    Enum,
+    Table,
     create_engine,
     text,
 )
@@ -19,8 +23,9 @@ from ..models import (
 )
 
 from ..utils import get_python_type
-from ..models import RelationshipAttribute, RelationshipType
+from ..models import RelationshipAttribute, RelationshipType, ColumnAttribute
 from .sqlmodels import SQLModelGenerator
+
 
 @dataclass
 class ReverseRelationship:
@@ -29,6 +34,7 @@ class ReverseRelationship:
     local_column: str
     target_column: str
     to_many: bool
+
 
 class AwareGenerator(SQLModelGenerator):
     def __init__(
@@ -75,9 +81,10 @@ class AwareGenerator(SQLModelGenerator):
         return models
 
     def collect_imports(self, models: Iterable[Model]) -> None:
-        super().collect_imports(models)
-        self.remove_literal_import("sqlmodel", "SQLModel")
-        self.add_literal_import("typing", "Set")
+        self.add_literal_import("__future__", "annotations")
+        self.add_literal_import("typing", "Set, List")
+        self.add_literal_import("pydantic", "Field")
+        self.add_literal_import("datetime", "datetime")
         self.add_literal_import("aware_sql_python_types.base_model", "AwareSQLModel")
         self.add_literal_import(
             "aware_database_handlers.supabase.supabase_client_handler",
@@ -105,14 +112,17 @@ class AwareGenerator(SQLModelGenerator):
                 for relationship in model.relationships:
                     target_table = relationship.target.table.name
                     source_table = model.name
-                    
+
                     if target_table in fk_cache.get(source_table, {}):
                         local_column, target_column = fk_cache[source_table][target_table]
-                        
+
                         if target_table not in reverse_relationships:
                             reverse_relationships[target_table] = []
 
-                        to_many = relationship.type in [RelationshipType.MANY_TO_ONE, RelationshipType.MANY_TO_MANY]
+                        to_many = relationship.type in [
+                            RelationshipType.MANY_TO_ONE,
+                            RelationshipType.MANY_TO_MANY,
+                        ]
 
                         reverse_relationships[target_table].append(
                             ReverseRelationship(
@@ -120,11 +130,13 @@ class AwareGenerator(SQLModelGenerator):
                                 foreign_key_field=local_column,
                                 local_column=target_column,
                                 target_column=local_column,
-                                to_many=to_many
+                                to_many=to_many,
                             )
                         )
                     else:
-                        print(f"Warning: Could not find foreign key for relationship {relationship.name} in {source_table}")
+                        print(
+                            f"Warning: Could not find foreign key for relationship {relationship.name} in {source_table}"
+                        )
 
         return reverse_relationships
 
@@ -136,8 +148,6 @@ class AwareGenerator(SQLModelGenerator):
             if isinstance(model, ModelClass):
                 functions = class_functions.get(model.table.name, [])
                 rendered.append(self.render_namespace(model, functions))
-            else:
-                rendered.append(f"{model.name} = {self.render_table(model.table)}")
 
         return "\n".join(rendered)
 
@@ -162,7 +172,7 @@ class {namespace}:
     def render_class_properties(self, model: ModelClass) -> str:
 
         def render_forward_properties():
-            #return []
+            # return []
             properties = []
             for fk in model.table.foreign_keys:
                 target_table = fk.column.table
@@ -335,7 +345,7 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
         {{
 {rpc_args}
         }}
-    ).execute().data
+    ).execute()
 """
         return method
 
@@ -352,7 +362,7 @@ def {name}({args}) -> {return_type}:
         {{
 {rpc_args}
         }}
-{self.indentation}).execute().data
+{self.indentation}).execute()
 """
 
     def render_docstring(self, func_meta: FunctionMetadata, return_type: str) -> str:
@@ -380,16 +390,115 @@ def {name}({args}) -> {return_type}:
                 filtered_lines.append(line)
         return "\n".join(f"{line}" for line in filtered_lines)
 
+    @overrides
     def render_relationship(self, relationship: RelationshipAttribute) -> str:
+        return ""
+
         relationship.target_ns = f"Ns{relationship.target.name}"
         relationship.enable_private = False
         # relationship.prefix_private = True
         relationship.rename_lists = True
         return super().render_relationship(relationship)
 
+    def render_table_args(self, table: Table) -> str:
+        return ""
+
+    def render_module_variables(self, models: list[Model]) -> str:
+        return ""
+
+    def render_class_declaration(self, model: ModelClass) -> str:
+        if model.parent_class:
+            parent = model.parent_class.name
+        else:
+            parent = self.base_class_name
+
+        superclass_part = f"({parent})"
+        return f"class {model.name}{superclass_part}:"
+
     def indent_all_lines(self, s):
         return "\n".join(f"{self.indentation}{line}" for line in s.split("\n"))
 
+    def render_column_attribute(self, column_attr: ColumnAttribute) -> str:
+        column = column_attr.column
+        try:
+            python_type = column.type.python_type
+        except NotImplementedError:
+            print(f"Warning: Could not determine Python type for column {column.name}", column.type)
+            python_type_name = "Any"
+        else:
+            python_type_name = python_type.__name__
+
+        # Translate UUID to str to comply with Pydantic
+        if python_type_name == "UUID":
+            python_type_name = "str"
+
+        kwargs: dict[str, Any] = {}
+        if (
+            column.autoincrement and column.name in column.table.primary_key
+        ) or column.nullable:
+            self.add_literal_import("typing", "Optional")
+            kwargs["default"] = None
+            python_type_name = f"Optional[{python_type_name}]"
+
+        rendered_column_field = self.render_column(column, True, is_table=True)
+        #return rendered_column
+        
+        #kwargs["sa_column"] = f"{rendered_column}"
+        #rendered_field = render_callable("Field", kwargs=kwargs)
+        return f"{column_attr.name}: {python_type_name} = {rendered_column_field}"
+
+    def render_column(
+        self, column: Column[Any], show_name: bool, is_table: bool = False
+    ) -> str:
+        name = column.name if show_name else "_"
+        
+        python_type = get_python_type(str(column.type))
+        
+        field_args = []
+        field_kwargs = {}
+        
+        # Handle Enum types
+        if isinstance(column.type, Enum):
+            python_type = self.process_enum_type(column.type)
+        
+        # Handle default values
+        if column.default is not None:
+            if column.default.is_scalar:
+                field_kwargs['default'] = repr(column.default.arg)
+            else:
+                field_kwargs['default'] = 'None'
+        elif column.server_default is not None or not column.nullable:
+            field_args.append('...')  # Pydantic's way to indicate a required field
+        
+        # Handle nullable
+        if not column.nullable and not column.primary_key:
+            field_kwargs['nullable'] = 'False'
+        
+        # Handle primary key
+        if column.primary_key:
+            field_kwargs['primary_key'] = 'True'
+        
+        # Handle comment/description
+        if hasattr(column, 'comment') and column.comment:
+            field_kwargs['description'] = repr(column.comment)
+        
+        # Generate the Field definition
+        args_str = ', '.join(field_args)
+        kwargs_str = ', '.join(f'{k}={v}' for k, v in field_kwargs.items())
+        all_args = ', '.join(filter(None, [args_str, kwargs_str]))
+        
+        return f"Field({kwargs_str})" if field_kwargs else "None"
+        
+    def process_enum_type(self, coltype: Enum) -> str:
+        if coltype.name is not None:
+            # Generate a Python-style class name from the Enum name
+            enum_class_name = "".join(
+                word.capitalize() for word in coltype.name.split("_")
+            )
+            # Add the enum class name and its values to the set
+            self.enums_to_generate.add((enum_class_name, tuple(coltype.enums)))
+            return enum_class_name
+        return "str"  # Default to str if no name is provided
 
 @dataclass
 class ArgumentInfo:

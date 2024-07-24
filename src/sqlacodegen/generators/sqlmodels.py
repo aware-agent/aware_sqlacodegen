@@ -131,7 +131,6 @@ class SQLModelGenerator(DeclarativeGenerator):
         )
 
     def collect_imports(self, models: Iterable[Model]) -> None:
-        self.add_literal_import("__future__", "annotations")
         super(DeclarativeGenerator, self).collect_imports(models)
         if any(isinstance(model, ModelClass) for model in models):
             self.add_literal_import("sqlmodel", "SQLModel")
@@ -166,6 +165,7 @@ class SQLModelGenerator(DeclarativeGenerator):
 
     def render_module_variables(self, models: list[Model]) -> str:
         declarations: list[str] = self.base.declarations
+        print("DECLARATIONS", declarations)
         if any(not isinstance(model, ModelClass) for model in models):
             if self.base.table_metadata_declaration is not None:
                 declarations.append(self.base.table_metadata_declaration)

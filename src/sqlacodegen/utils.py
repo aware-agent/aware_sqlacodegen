@@ -181,6 +181,7 @@ def render_callable(
         delimiter = ", "
 
     rendered_args = delimiter.join(str(arg) for arg in args)
+
     return f"{name}({prefix}{rendered_args}{suffix})"
 
 
@@ -264,7 +265,8 @@ def get_python_type(sql_type: str, is_array: bool = False) -> str:
         "bit": "str",
         "bit varying": "str",
         # UUID Type
-        "uuid": "str",
+        "UUID": "str", # TODO use UUID!
+        "uuid": "str", # TODO use UUID!
         # JSON Types
         "json": "dict",
         "jsonb": "dict",
