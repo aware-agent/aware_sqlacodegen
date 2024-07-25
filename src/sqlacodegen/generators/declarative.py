@@ -40,7 +40,10 @@ from .tables import TablesGenerator
 
 
 class DeclarativeGenerator(TablesGenerator):
-    valid_options: ClassVar[set[str]] = TablesGenerator.valid_options | {
+    valid_options: ClassVar[set[str]] = {
+        "noindexes",
+        "noconstraints",
+        "nocomments",
         "use_inflect",
         "nojoined",
         "nobidi",

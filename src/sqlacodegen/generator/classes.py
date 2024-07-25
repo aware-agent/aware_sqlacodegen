@@ -59,15 +59,9 @@ class AwareGenerator(SQLModelGenerator):
             indentation=indentation,
             base_class_name=base_class_name,
         )
-        self.options = options
+        self.function_generator = FunctionGenerator(self.bind.engine.url)
 
     def generate(self) -> Any:
-
-        from ..generator.main import Generator
-        gen = Generator(metadata=self.metadata, bind=self.bind, options=self.options)
-        return gen.generate()
-
-        # temporary
         unformatted_output = super().generate()
 
         unformatted_resolved_output = self.resolve_unresolved_types(unformatted_output)
