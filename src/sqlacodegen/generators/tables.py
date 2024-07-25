@@ -577,7 +577,7 @@ class TablesGenerator(CodeGenerator):
     def render_python_enum(self, name: str, values: list[str]) -> str:
         enum_members = "\n    ".join([f"{value.upper()} = '{value}'" for value in values])
         self.add_literal_import("enum", "Enum")
-        return f"class {name}(Enum, str):\n    {enum_members}\n"
+        return f"class {name}(str, Enum):\n    {enum_members}\n"
 
     def should_ignore_table(self, table: Table) -> bool:
         # Support for Alembic and sqlalchemy-migrate -- never expose the schema version

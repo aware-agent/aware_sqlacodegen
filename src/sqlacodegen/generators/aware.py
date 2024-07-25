@@ -11,7 +11,12 @@ from sqlalchemy import (
     Column,
     MetaData,
     Enum,
+    DefaultClause,
+    Computed,
     Table,
+    FetchedValue,
+    ClauseElement,
+    TextClause,
     create_engine,
     text,
 )
@@ -284,6 +289,14 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
         ]
         return "\n".join(free_functions)
 
+    def resolve_type(self, type_: str) -> str:
+        python_type = get_python_type(type_)
+        if python_type == "Any":
+            print(f"Warning: Could not determine Python type for {type_}")
+            if type_ in self.enums_to_generate:
+                return type_
+        return python_type
+
     def render_rpc_method(
         self,
         func_meta: FunctionMetadata,
@@ -291,7 +304,7 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
     ) -> str:
         python_name = func_meta.function_name or func_meta.name
         args_str = self.render_arguments(func_meta.arguments)
-        return_python_type = get_python_type(func_meta.return_type)
+        return_python_type = self.resolve_type(func_meta.return_type)
         docstring = self.render_docstring(func_meta, return_python_type)
         rpc_args_str = self.render_rpc_arguments(func_meta.arguments)
 
@@ -316,7 +329,7 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
 
     def render_arguments(self, arguments):
         return ", ".join(
-            f"{arg.name}: {get_python_type(arg.type)}"
+            f"{arg.name}: {self.resolve_type(arg.type)}"
             for arg in arguments
             if not arg.class_sourced
         )
@@ -443,40 +456,53 @@ def {name}({args}) -> {return_type}:
         rendered_column_field = self.render_column(column, True, is_table=True)
         #return rendered_column
         
-        #kwargs["sa_column"] = f"{rendered_column}"
-        #rendered_field = render_callable("Field", kwargs=kwargs)
-        return f"{column_attr.name}: {python_type_name} = {rendered_column_field}"
+        var_base = f"{column_attr.name}: {python_type_name}"
+
+        print(f"var_base: {var_base}")
+        print(f"rendered_column_field: {rendered_column_field}")
+
+        if rendered_column_field:
+            var_base += f" = {rendered_column_field}"
+        return var_base
+
 
     def render_column(
         self, column: Column[Any], show_name: bool, is_table: bool = False
     ) -> str:
         name = column.name if show_name else "_"
         
-        python_type = get_python_type(str(column.type))
-        
+        python_type = self.resolve_type(str(column.type))
+
         field_args = []
         field_kwargs = {}
         
         # Handle Enum types
         if isinstance(column.type, Enum):
+            #print(f"Debug - Enum: {column.name} - {column.type}, {column.type.enums}, {column.type.name}, {self.to_pascal_case(column.type.name)}")
+
             python_type = self.process_enum_type(column.type)
         
         # Handle default values
-        if column.default is not None:
-            if column.default.is_scalar:
-                field_kwargs['default'] = repr(column.default.arg)
-            else:
-                field_kwargs['default'] = 'None'
-        elif column.server_default is not None or not column.nullable:
+
+        print(f"Debug - Column: {column.name} - {column.default}, {column.server_default}, {column.nullable}, {column.primary_key}")
+
+        if column.server_default:
+            if column.server_default.has_argument and isinstance(column.server_default, DefaultClause):
+                if isinstance(column.server_default.arg, str):
+                    field_kwargs['default'] = repr(column.server_default.arg)
+
+
+        if column.nullable is False:
+            print(f"NOT NULLABLE")
             field_args.append('...')  # Pydantic's way to indicate a required field
         
-        # Handle nullable
-        if not column.nullable and not column.primary_key:
-            field_kwargs['nullable'] = 'False'
-        
-        # Handle primary key
-        if column.primary_key:
-            field_kwargs['primary_key'] = 'True'
+#        # Handle nullable
+#        if not column.nullable and not column.primary_key:
+#            field_kwargs['nullable'] = 'False'
+#        
+#        # Handle primary key
+#        if column.primary_key:
+#            field_kwargs['primary_key'] = 'True'
         
         # Handle comment/description
         if hasattr(column, 'comment') and column.comment:
@@ -487,14 +513,14 @@ def {name}({args}) -> {return_type}:
         kwargs_str = ', '.join(f'{k}={v}' for k, v in field_kwargs.items())
         all_args = ', '.join(filter(None, [args_str, kwargs_str]))
         
-        return f"Field({kwargs_str})" if field_kwargs else "None"
+        print(f"Debug - ALL ARGS: {all_args}")
+
+        return f"Field({all_args})" if all_args else ""
         
     def process_enum_type(self, coltype: Enum) -> str:
         if coltype.name is not None:
             # Generate a Python-style class name from the Enum name
-            enum_class_name = "".join(
-                word.capitalize() for word in coltype.name.split("_")
-            )
+            enum_class_name = self.to_pascal_case(coltype.name)
             # Add the enum class name and its values to the set
             self.enums_to_generate.add((enum_class_name, tuple(coltype.enums)))
             return enum_class_name
