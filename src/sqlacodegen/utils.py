@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import PrimaryKeyConstraint, UniqueConstraint
 from sqlalchemy.engine import Connection, Engine
@@ -213,7 +213,7 @@ def decode_postgresql_sequence(clause: TextClause) -> tuple[str | None, str | No
     return schema, sequence
 
 
-def get_python_type(sql_type: str, is_array: bool = False) -> str:
+def get_python_type(sql_type: str, is_array: bool = False) -> Optional[str]:
     """
     Map PostgreSQL types to Python types.
     """
@@ -226,6 +226,7 @@ def get_python_type(sql_type: str, is_array: bool = False) -> str:
         "numeric": "Decimal",
         "real": "float",
         "double precision": "float",
+        "double": "float",
         "serial": "int",
         "bigserial": "int",
         # Monetary types
@@ -241,6 +242,8 @@ def get_python_type(sql_type: str, is_array: bool = False) -> str:
         # Date/Time Types
         "timestamp without time zone": "datetime",
         "timestamp with time zone": "datetime",
+        "timestamptz": "datetime",
+        "timestamp": "datetime",
         "date": "date",
         "time without time zone": "time",
         "time with time zone": "time",
@@ -284,7 +287,7 @@ def get_python_type(sql_type: str, is_array: bool = False) -> str:
 
     is_array, is_set, base_type = _is_array_or_set(sql_type)
 
-    python_type = type_mapping.get(base_type, "Any")
+    python_type = type_mapping.get(base_type, None)
 
     if is_array:
         return f"List[{python_type}]"
@@ -292,9 +295,6 @@ def get_python_type(sql_type: str, is_array: bool = False) -> str:
         return f"Set[{python_type}]"
 
     return python_type
-    # # Array handling
-    # python_type = type_mapping.get(sql_type, "Any")
-    # return f"List[{python_type}]" if is_array else python_type
 
 
 def _is_array_or_set(sql_type: str) -> tuple[bool, bool, str]:

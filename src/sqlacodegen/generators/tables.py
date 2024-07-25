@@ -10,7 +10,7 @@ from importlib import import_module
 from inspect import Parameter
 from itertools import count
 from keyword import iskeyword
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import sqlalchemy
 from sqlalchemy import (
@@ -86,6 +86,20 @@ class CodeGenerator(metaclass=ABCMeta):
         .. note:: May modify the metadata.
         """
 
+@dataclass
+class EnumInfo:
+    name: str
+    values: list[str]
+
+    def __hash__(self):
+        hash_value = hash(self.name)
+        return hash_value
+
+    def __eq__(self, other):
+        if not isinstance(other, EnumInfo):
+            return NotImplemented
+        equality = self.name == other.name
+        return equality
 
 @dataclass(eq=False)
 class TablesGenerator(CodeGenerator):
@@ -156,14 +170,14 @@ class TablesGenerator(CodeGenerator):
             sections.append(variables + "\n")
 
         # Render models
-        self.enums_to_generate = set()
+        self.enums_to_generate: set[EnumInfo] = set()
         rendered_models = self.render_models(models)
         if rendered_models:
             sections.append(rendered_models)
 
         # Render enums
-        for enum_name, enum_values in self.enums_to_generate:
-            rendered_enum = self.render_python_enum(enum_name, enum_values)
+        for enum_info in self.enums_to_generate:
+            rendered_enum = self.render_python_enum(enum_info.name, enum_info.values)
             sections.insert(0, rendered_enum)  # Insert enums at the beginning
 
         # Render collected imports
@@ -194,7 +208,7 @@ class TablesGenerator(CodeGenerator):
         for index in model.table.indexes:
             self.collect_imports_for_constraint(index)
 
-    def collect_imports_for_column(self, column: Column[Any]) -> None:
+    def collect_imports_for_column(self, column: Column[any]) -> None:
         self.add_import(column.type)
 
         if isinstance(column.type, ARRAY):
@@ -235,7 +249,7 @@ class TablesGenerator(CodeGenerator):
         else:
             self.add_import(constraint)
 
-    def add_import(self, obj: Any) -> None:
+    def add_import(self, obj: any) -> None:
         # Don't store builtin imports
         if getattr(obj, "__module__", "builtins") == "builtins":
             return
@@ -376,10 +390,10 @@ class TablesGenerator(CodeGenerator):
 
     # TODO find better solution for is_table
     def render_column(
-        self, column: Column[Any], show_name: bool, is_table: bool = False
+        self, column: Column[any], show_name: bool, is_table: bool = False
     ) -> str:
         args = []
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, any] = {}
         kwarg = []
         is_sole_pk = column.primary_key and len(column.table.primary_key) == 1
         dedicated_fks = [
@@ -473,7 +487,7 @@ class TablesGenerator(CodeGenerator):
 
     def render_column_type(self, coltype: object) -> str:
         args = []
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, any] = {}
         sig = inspect.signature(coltype.__class__.__init__)
         defaults = {param.name: param.default for param in sig.parameters.values()}
         missing = object()
@@ -515,6 +529,7 @@ class TablesGenerator(CodeGenerator):
                 word.capitalize() for word in coltype.name.split("_")
             )
             # Add the enum class name and its values to the set
+            raise NotImplementedError("Enum type is not supported") 
             self.enums_to_generate.add((enum_class_name, tuple(coltype.enums)))
             # Clear existing args and kwargs, then add only the enum class name
             args = [enum_class_name]
@@ -535,7 +550,7 @@ class TablesGenerator(CodeGenerator):
             return coltype.__class__.__name__
 
     def render_constraint(self, constraint: Constraint | ForeignKey) -> str:
-        def add_fk_options(*opts: Any) -> None:
+        def add_fk_options(*opts: any) -> None:
             args.extend(repr(opt) for opt in opts)
             for attr in (
                 "ondelete",
@@ -549,7 +564,7 @@ class TablesGenerator(CodeGenerator):
                     kwargs[attr] = repr(value)
 
         args: list[str] = []
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, any] = {}
         if isinstance(constraint, ForeignKey):
             remote_column = f"{constraint.column.table.fullname}.{constraint.column.name}"
             add_fk_options(remote_column)
@@ -665,7 +680,7 @@ class TablesGenerator(CodeGenerator):
 
                         column.server_default = None
 
-    def get_adapted_type(self, coltype: Any) -> Any:
+    def get_adapted_type(self, coltype: any) -> any:
         compiled_type = coltype.compile(self.bind.engine.dialect)
         for supercls in coltype.__class__.__mro__:
             if not supercls.__name__.startswith("_") and hasattr(

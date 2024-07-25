@@ -30,6 +30,7 @@ from ..models import (
 from ..utils import get_python_type
 from ..models import RelationshipAttribute, RelationshipType, ColumnAttribute
 from .sqlmodels import SQLModelGenerator
+from .tables import EnumInfo
 
 
 @dataclass
@@ -63,6 +64,8 @@ class AwareGenerator(SQLModelGenerator):
     def generate(self) -> Any:
         unformatted_output = super().generate()
 
+        unformatted_resolved_output = self.resolve_unresolved_types(unformatted_output)
+
         def apply_black_formatter(code: str) -> str:
             mode = black.Mode(
                 line_length=90,
@@ -71,23 +74,39 @@ class AwareGenerator(SQLModelGenerator):
             )
             return black.format_str(code, mode=mode)
 
-        return apply_black_formatter(unformatted_output)
+        return apply_black_formatter(unformatted_resolved_output)
+
+    def resolve_unresolved_types(self, source: str) -> str:
+        def replace_unresolved(match):
+            unresolved_type = self.to_pascal_case(match.group(1))
+
+            # Try to match with enum name directly
+            for enum_info in self.enums_to_generate:
+                if enum_info.name == unresolved_type:
+                    return enum_info.name
+
+            # If still no match, raise an error
+            raise ValueError(f"Could not resolve type: {unresolved_type}")
+
+        unresolved_pattern = re.compile(r"UNRESOLVED_(\w+)_ENUM")
+        return unresolved_pattern.sub(replace_unresolved, source)
 
     def generate_models(self) -> list[Model]:
         models = super().generate_models()
         self.reverse_relationships = self.build_reverse_relationships(models)
-        print("Debug - Reverse Relationships:")
-        for table, relationships in self.reverse_relationships.items():
-            print(f"  {table}:")
-            for rel in relationships:
-                print(
-                    f"     {rel.referencing_model} -> {rel.foreign_key_field} - {rel.target_column} -> {rel.local_column} -- {rel.to_many}"
-                )
+        if False:
+            print("Debug - Reverse Relationships:")
+            for table, relationships in self.reverse_relationships.items():
+                for rel in relationships:
+                    print(
+                        f"     {rel.referencing_model} -> {rel.foreign_key_field} - {rel.target_column} -> {rel.local_column} -- {rel.to_many}"
+                    )
         return models
 
     def collect_imports(self, models: Iterable[Model]) -> None:
         self.add_literal_import("__future__", "annotations")
         self.add_literal_import("typing", "Set, List")
+        self.add_literal_import("uuid", "UUID")
         self.add_literal_import("pydantic", "Field")
         self.add_literal_import("datetime", "datetime")
         self.add_literal_import("aware_sql_python_types.base_model", "AwareSQLModel")
@@ -137,10 +156,6 @@ class AwareGenerator(SQLModelGenerator):
                                 target_column=local_column,
                                 to_many=to_many,
                             )
-                        )
-                    else:
-                        print(
-                            f"Warning: Could not find foreign key for relationship {relationship.name} in {source_table}"
                         )
 
         return reverse_relationships
@@ -291,10 +306,9 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
 
     def resolve_type(self, type_: str) -> str:
         python_type = get_python_type(type_)
-        if python_type == "Any":
-            print(f"Warning: Could not determine Python type for {type_}")
-            if type_ in self.enums_to_generate:
-                return type_
+        if not python_type:
+            python_type = "UNRESOLVED_" + type_ + "_ENUM"
+
         return python_type
 
     def render_rpc_method(
@@ -337,10 +351,20 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
     def render_rpc_arguments(self, arguments):
         rpc_args = []
         for arg in arguments:
+
+            python_type = self.resolve_type(arg.type)
+            assume_enum = False
+            if python_type.startswith("UNRESOLVED_") and python_type.endswith("_ENUM"):
+                assume_enum = True
+
             if arg.class_sourced:
                 rpc_arg = f'"{arg.name}": self.{arg.class_attribute}'
             else:
                 rpc_arg = f'"{arg.name}": {arg.name}'
+            
+            if assume_enum:
+                rpc_arg += ".value"
+
             rpc_args.append(rpc_arg)
         return ",\n".join(f"{self.indentation * 4}{arg}" for arg in rpc_args)
 
@@ -433,17 +457,8 @@ def {name}({args}) -> {return_type}:
 
     def render_column_attribute(self, column_attr: ColumnAttribute) -> str:
         column = column_attr.column
-        try:
-            python_type = column.type.python_type
-        except NotImplementedError:
-            print(f"Warning: Could not determine Python type for column {column.name}", column.type)
-            python_type_name = "Any"
-        else:
-            python_type_name = python_type.__name__
-
-        # Translate UUID to str to comply with Pydantic
-        if python_type_name == "UUID":
-            python_type_name = "str"
+        python_type = column.type.python_type
+        python_type_name = python_type.__name__
 
         kwargs: dict[str, Any] = {}
         if (
@@ -454,77 +469,54 @@ def {name}({args}) -> {return_type}:
             python_type_name = f"Optional[{python_type_name}]"
 
         rendered_column_field = self.render_column(column, True, is_table=True)
-        #return rendered_column
-        
         var_base = f"{column_attr.name}: {python_type_name}"
-
-        print(f"var_base: {var_base}")
-        print(f"rendered_column_field: {rendered_column_field}")
 
         if rendered_column_field:
             var_base += f" = {rendered_column_field}"
         return var_base
 
-
     def render_column(
         self, column: Column[Any], show_name: bool, is_table: bool = False
     ) -> str:
         name = column.name if show_name else "_"
-        
-        python_type = self.resolve_type(str(column.type))
 
         field_args = []
         field_kwargs = {}
-        
+
         # Handle Enum types
         if isinstance(column.type, Enum):
-            #print(f"Debug - Enum: {column.name} - {column.type}, {column.type.enums}, {column.type.name}, {self.to_pascal_case(column.type.name)}")
+            _ = self.process_enum_type(column.type)
 
-            python_type = self.process_enum_type(column.type)
-        
         # Handle default values
-
-        print(f"Debug - Column: {column.name} - {column.default}, {column.server_default}, {column.nullable}, {column.primary_key}")
-
         if column.server_default:
-            if column.server_default.has_argument and isinstance(column.server_default, DefaultClause):
+            if column.server_default.has_argument and isinstance(
+                column.server_default, DefaultClause
+            ):
                 if isinstance(column.server_default.arg, str):
-                    field_kwargs['default'] = repr(column.server_default.arg)
-
+                    field_kwargs["default"] = repr(column.server_default.arg)
 
         if column.nullable is False:
-            print(f"NOT NULLABLE")
-            field_args.append('...')  # Pydantic's way to indicate a required field
-        
-#        # Handle nullable
-#        if not column.nullable and not column.primary_key:
-#            field_kwargs['nullable'] = 'False'
-#        
-#        # Handle primary key
-#        if column.primary_key:
-#            field_kwargs['primary_key'] = 'True'
-        
-        # Handle comment/description
-        if hasattr(column, 'comment') and column.comment:
-            field_kwargs['description'] = repr(column.comment)
-        
-        # Generate the Field definition
-        args_str = ', '.join(field_args)
-        kwargs_str = ', '.join(f'{k}={v}' for k, v in field_kwargs.items())
-        all_args = ', '.join(filter(None, [args_str, kwargs_str]))
-        
-        print(f"Debug - ALL ARGS: {all_args}")
+            field_args.append("...")
 
+        # Handle comment/description
+        if hasattr(column, "comment") and column.comment:
+            field_kwargs["description"] = repr(column.comment)
+
+        # Generate the Field definition
+        args_str = ", ".join(field_args)
+        kwargs_str = ", ".join(f"{k}={v}" for k, v in field_kwargs.items())
+        all_args = ", ".join(filter(None, [args_str, kwargs_str]))
         return f"Field({all_args})" if all_args else ""
-        
+
     def process_enum_type(self, coltype: Enum) -> str:
-        if coltype.name is not None:
-            # Generate a Python-style class name from the Enum name
-            enum_class_name = self.to_pascal_case(coltype.name)
-            # Add the enum class name and its values to the set
-            self.enums_to_generate.add((enum_class_name, tuple(coltype.enums)))
-            return enum_class_name
-        return "str"  # Default to str if no name is provided
+        if coltype.name is None:
+            raise ValueError("Enum type must have a name")
+        enum_class_name = self.to_pascal_case(coltype.name)
+        # Create and add the new enum
+        new_enum = EnumInfo(name=enum_class_name, values=list(coltype.enums))
+        self.enums_to_generate.add(new_enum)
+        return enum_class_name
+
 
 @dataclass
 class ArgumentInfo:
