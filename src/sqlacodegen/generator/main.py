@@ -1,109 +1,61 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+import sys
 from dataclasses import dataclass, field
-from overrides import overrides
-from typing import Any, Dict, List, Tuple
+from keyword import iskeyword
+from typing import ClassVar, TypeVar, Any, Dict, List, Tuple, cast
 import black
 from textwrap import indent
+from collections import defaultdict
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass
+from itertools import count
 
+from sqlalchemy import (
+    Sequence as AlchemySequence,
+    DefaultClause,
+    Dialect,
+    TextClause,
+    ARRAY,
+    Boolean,
+    CheckConstraint,
+    Column,
+    Enum,
+    Float,
+    MetaData,
+    PrimaryKeyConstraint,
+    String,
+    Table,
+    UniqueConstraint,
+)
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import CompileError
+from sqlalchemy.sql.elements import TextClause
+from sqlalchemy.sql.type_api import TypeEngine
+
+from ..models import (
+    Model,
+    ModelClass,
+    RelationshipAttribute,
+    RelationshipType,
+    ColumnAttribute,
+)
 from ..utils import (
     get_column_names,
     get_compiled_expression,
     get_python_type,
     qualified_table_name,
     get_common_fk_constraints,
-)
-
-from sqlalchemy import (
-    Column,
-    MetaData,
-    Enum,
-    DefaultClause,
-    Computed,
-    Table,
-    FetchedValue,
-    ClauseElement,
-    Dialect,
-    TextClause,
-    create_engine,
-    text,
-)
-from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.sql.type_api import TypeEngine
-
-from ..models import (
-    Model,
-    ModelClass,
-)
-
-from ..utils import get_python_type
-from ..models import RelationshipAttribute, RelationshipType, ColumnAttribute
-
-from pydantic import Field
-
-from .functions import fetch_functions, FunctionMetadata
-from typing import ClassVar
-from sys import builtin_module_names
-
-import inspect
-import sys
-from abc import ABCMeta, abstractmethod
-from collections import defaultdict
-from collections.abc import Collection, Iterable, Sequence
-from dataclasses import dataclass
-from importlib import import_module
-from inspect import Parameter
-from itertools import count
-from keyword import iskeyword
-from typing import ClassVar
-
-import sqlalchemy
-from sqlalchemy import (
-    ARRAY,
-    Boolean,
-    CheckConstraint,
-    Column,
-    Computed,
-    Constraint,
-    DefaultClause,
-    Enum,
-    Float,
-    ForeignKey,
-    ForeignKeyConstraint,
-    Identity,
-    Index,
-    MetaData,
-    PrimaryKeyConstraint,
-    String,
-    Table,
-    Text,
-    UniqueConstraint,
-)
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import CompileError
-from sqlalchemy.sql.elements import TextClause
-
-from ..models import (
-    Model,
-    ModelClass,
-)
-from ..models import Base, LiteralImport
-from ..utils import (
     decode_postgresql_sequence,
-    get_column_names,
-    get_compiled_expression,
     get_constraint_sort_key,
-    render_callable,
-    uses_default_name,
     re_invalid_identifier,
     re_column_name,
     re_boolean_check_constraint,
     re_enum_check_constraint,
     re_enum_item,
 )
+from .functions import fetch_functions, FunctionMetadata
 
 Imports = dict[str, set[str]]  # type alias
 
@@ -134,7 +86,7 @@ class ReverseRelationship:
 
 
 @dataclass
-class Generator():
+class Generator:
     metadata: MetaData
     bind: Connection | Engine
     options: Sequence[str] = field(default_factory=list)
@@ -143,30 +95,17 @@ class Generator():
     valid_options: ClassVar[set[str]] = {
         "nojoined",
     }
-    builtin_module_names: ClassVar[set[str]] = set(__import__('sys').builtin_module_names) | {"dataclasses"}
+    builtin_module_names: ClassVar[set[str]] = set(
+        __import__("sys").builtin_module_names
+    ) | {"dataclasses"}
     imports: ClassVar[dict[str, set[str]]] = defaultdict(set)
     module_imports: ClassVar[set[str]] = set()
-
-    def generate(self) -> Any:
-        unformatted_output = self._generate()
-
-        unformatted_resolved_output = self.resolve_unresolved_types(unformatted_output)
-
-        def apply_black_formatter(code: str) -> str:
-            mode = black.Mode(
-                line_length=90,
-                string_normalization=True,
-                is_pyi=False,
-            )
-            return black.format_str(code, mode=mode)
-
-        return apply_black_formatter(unformatted_resolved_output)
 
     def add_literal_import(self, pkgname: str, name: str) -> None:
         names = self.imports.setdefault(pkgname, set())
         names.add(name)
 
-    def _generate(self) -> str:
+    def generate(self) -> str:
         sections: list[str] = []
 
         def should_ignore_table(table: Table) -> bool:
@@ -179,7 +118,7 @@ class Generator():
             for constraint in table.constraints.copy():
                 if isinstance(constraint, CheckConstraint):
                     sqltext = get_compiled_expression(constraint.sqltext, self.bind)
-
+        
                     # Turn any integer-like column with a CheckConstraint like
                     # "column IN (0, 1)" into a Boolean
                     match = re_boolean_check_constraint.match(sqltext)
@@ -190,7 +129,7 @@ class Generator():
                             table.constraints.remove(constraint)
                             table.c[colname].type = Boolean()
                             continue
-
+        
                     # Turn any string-type column with a CheckConstraint like
                     # "column IN (...)" into an Enum
                     match = re_enum_check_constraint.match(sqltext)
@@ -206,63 +145,48 @@ class Generator():
                                     table.c[colname].type = Enum(
                                         *options, native_enum=False
                                     )
-
+        
                                 continue
-
-            def get_adapted_type(coltype: TypeEngine[Any], dialect: Dialect) -> any:
+        
+            T = TypeVar("T", bound=TypeEngine)
+        
+            def get_adapted_type(coltype: T, dialect: Dialect) -> T:
                 compiled_type = coltype.compile(dialect)
+        
                 for supercls in coltype.__class__.__mro__:
-                    if not supercls.__name__.startswith("_") and hasattr(
+                    if supercls.__name__.startswith("_") or not hasattr(
                         supercls, "__visit_name__"
                     ):
-                        # Hack to fix adaptation of the Enum class which is broken since
-                        # SQLAlchemy 1.2
-                        kw = {}
-                        if supercls is Enum:
-                            kw["name"] = coltype.name
-                            # TODO : i think we can remove this
-
-                        try:
-                            new_coltype = coltype.adapt(supercls)
-                            # TODO : i think we can remove this
-                        except TypeError:
-                            # If the adaptation fails, don't try again
-                            break
-
-                        for key, value in kw.items():
-                            setattr(new_coltype, key, value)
-
-                        if isinstance(coltype, ARRAY):
+                        continue
+        
+                    try:
+                        new_coltype = cast(T, coltype.adapt(supercls))
+        
+                        if supercls is Enum and isinstance(coltype, (Enum)):
+                            setattr(new_coltype, "name", getattr(coltype, "name", None))
+        
+                        if isinstance(new_coltype, ARRAY):
                             new_coltype.item_type = get_adapted_type(
                                 new_coltype.item_type, dialect
                             )
-
-                        try:
-                            # If the adapted column type does not render the same as the
-                            # original, don't substitute it
-                            if (
-                                new_coltype.compile(self.bind.engine.dialect)
-                                != compiled_type
+        
+                        if new_coltype.compile(dialect) != compiled_type:
+                            if not isinstance(
+                                new_coltype, (Float, ARRAY)
+                            ) or not isinstance(
+                                getattr(new_coltype, "item_type", None), Float
                             ):
-                                # Make an exception to the rule for Float and arrays of Float,
-                                # since at least on PostgreSQL, Float can accurately represent
-                                # both REAL and DOUBLE_PRECISION
-                                if not isinstance(new_coltype, Float) and not (
-                                    isinstance(new_coltype, ARRAY)
-                                    and isinstance(new_coltype.item_type, Float)
-                                ):
-                                    break
-                        except CompileError:
-                            # If the adapted column type can't be compiled, don't substitute it
-                            break
-
-                        # Stop on the first valid non-uppercase column type class
+                                break
+        
                         coltype = new_coltype
                         if supercls.__name__ != supercls.__name__.upper():
                             break
-
+        
+                    except (TypeError, CompileError):
+                        break
+        
                 return coltype
-
+        
             for column in table.c:
                 try:
                     column.type = get_adapted_type(
@@ -270,7 +194,7 @@ class Generator():
                     )
                 except CompileError:
                     pass
-
+        
                 # PostgreSQL specific fix: detect sequences from server_default
                 if column.server_default and self.bind.dialect.name == "postgresql":
                     if isinstance(column.server_default, DefaultClause) and isinstance(
@@ -282,10 +206,8 @@ class Generator():
                         if seqname:
                             # Add an explicit sequence
                             if seqname != f"{column.table.name}_{column.name}_seq":
-                                column.default = sqlalchemy.Sequence(
-                                    seqname, schema=schema
-                                )
-
+                                column.default = AlchemySequence(name=seqname, schema=schema)
+        
                             column.server_default = None
 
         def render_python_enum(name: str, values: list[str]) -> str:
@@ -309,11 +231,6 @@ class Generator():
         # Generate the models
         models: list[Model] = self.generate_models()
 
-        # Render module level variables
-        variables = self.render_module_variables(models)
-        if variables:
-            sections.append(variables + "\n")
-
         # Render models
         self.enums_to_generate: set[EnumInfo] = set()
         rendered_models = self.render_models(models)
@@ -331,7 +248,19 @@ class Generator():
         if imports:
             sections.insert(0, imports)
 
-        return "\n\n".join(sections) + "\n"
+        # Combine all sections
+        raw_combined = "\n\n".join(sections) + "\n"
+
+        # Resolve the UNRESOLVED_*_ENUM types
+        raw_resolved = self.resolve_unresolved_types(raw_combined)
+
+        # format the code
+        mode = black.Mode(
+            line_length=90,
+            string_normalization=True,
+            is_pyi=False,
+        )
+        return black.format_str(raw_resolved, mode=mode)
 
     def resolve_unresolved_types(self, source: str) -> str:
         def replace_unresolved(match):
@@ -408,11 +337,22 @@ class Generator():
                             model.parent_class = target
                             target.children.append(model)
 
-        # Collect the imports
-        self.collect_imports()
+        # Collect imports
+        self.add_literal_import("__future__", "annotations")
+        self.add_literal_import("typing", "Set, List")
+        self.add_literal_import("uuid", "UUID")
+        self.add_literal_import("pydantic", "Field")
+        self.add_literal_import("datetime", "datetime")
+        self.add_literal_import("aware_sql_python_types.base_model", "AwareSQLModel")
+        self.add_literal_import(
+            "aware_database_handlers.supabase.supabase_client_handler",
+            "SupabaseClientHandler",
+        )
+        self.add_literal_import(
+            "aware_database_handlers.supabase.utils.filter.filter", "Filter"
+        )
 
-        # Rename models and their attributes that conflict with imports or other
-        # attributes
+        # Rename models and their attributes that conflict with imports or other attributes
         global_names = {name for namespace in self.imports.values() for name in namespace}
         for model in models_by_table_name.values():
             self.generate_model_name(model, global_names)
@@ -432,7 +372,11 @@ class Generator():
             # Fill in the names for column attributes
             local_names: set[str] = set()
             for column_attr in model.columns:
-                self.generate_column_attr_name(column_attr, global_names, local_names)
+
+                # generate column attribute name
+                column_attr.name = self.find_free_name(
+                    column_attr.column.name, global_names, local_names
+                )
                 local_names.add(column_attr.name)
 
             # Fill in the names for relationship attributes
@@ -471,16 +415,6 @@ class Generator():
             for group in (future_imports, stdlib_imports, thirdparty_imports)
             if group
         ]
-
-    def generate_column_attr_name(
-        self,
-        column_attr: ColumnAttribute,
-        global_names: set[str],
-        local_names: set[str],
-    ) -> None:
-        column_attr.name = self.find_free_name(
-            column_attr.column.name, global_names, local_names
-        )
 
     def find_free_name(
         self,
@@ -625,8 +559,7 @@ class Generator():
                 # Generate the opposite end of the relationship in the target class
                 reverse_relationship = None
 
-                # Add a primary/secondary join for self-referential many-to-many
-                # relationships
+                # Add a primary/secondary join for self-referential many-to-many relationships
                 if source is target:
                     both_relationships = [relationship]
                     reverse_flags = [False, True]
@@ -673,21 +606,6 @@ class Generator():
                         ]
 
         return relationships
-
-    def collect_imports(self) -> None:
-        self.add_literal_import("__future__", "annotations")
-        self.add_literal_import("typing", "Set, List")
-        self.add_literal_import("uuid", "UUID")
-        self.add_literal_import("pydantic", "Field")
-        self.add_literal_import("datetime", "datetime")
-        self.add_literal_import("aware_sql_python_types.base_model", "AwareSQLModel")
-        self.add_literal_import(
-            "aware_database_handlers.supabase.supabase_client_handler",
-            "SupabaseClientHandler",
-        )
-        self.add_literal_import(
-            "aware_database_handlers.supabase.utils.filter.filter", "Filter"
-        )
 
     def build_reverse_relationships(
         self, models: List[Model]
@@ -860,14 +778,6 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
         if rendered_column_attributes:
             sections.append("\n".join(rendered_column_attributes))
 
-        # Render relationship attributes
-        rendered_relationship_attributes: list[str] = [
-            self.render_relationship(relationship) for relationship in model.relationships
-        ]
-
-        if rendered_relationship_attributes:
-            sections.append("\n".join(rendered_relationship_attributes))
-
         declaration = self.render_class_declaration(model)
         rendered_sections = "\n\n".join(
             indent(section, self.indentation) for section in sections
@@ -879,11 +789,6 @@ def get_{property_name}(cls) -> Ns{target_class}.{target_class}:
 
         if model.table.name != model.name.lower():
             variables.append(f"__tablename__ = {model.table.name!r}")
-
-        # Render constraints and indexes as __table_args__
-        table_args = self.render_table_args(model.table)
-        if table_args:
-            variables.append(f"__table_args__ = {table_args}")
 
         return "\n".join(variables)
 
@@ -1045,14 +950,6 @@ def {name}({args}) -> {return_type}:
                 filtered_lines.append(line)
         return "\n".join(f"{line}" for line in filtered_lines)
 
-    def render_relationship(self, relationship: RelationshipAttribute) -> str:
-        return ""
-
-    def render_table_args(self, table: Table) -> str:
-        return ""
-
-    def render_module_variables(self, models: list[Model]) -> str:
-        return ""
 
     def render_class_declaration(self, model: ModelClass) -> str:
         if model.parent_class:
@@ -1089,8 +986,6 @@ def {name}({args}) -> {return_type}:
     def render_column(
         self, column: Column[Any], show_name: bool, is_table: bool = False
     ) -> str:
-        name = column.name if show_name else "_"
-
         field_args = []
         field_kwargs = {}
 
